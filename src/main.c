@@ -26,7 +26,7 @@ struct gap_buf gap_init(size_t size) {
   gap.end = gap.start + size - 1;
   gap.c = gap.start;
   gap.ce = gap.end;
-  gap.marker = NULL;
+  gap.marker = gap.start;
   return gap;
 }
 
@@ -116,15 +116,14 @@ void gap_right(struct gap_buf* gap, int n_ch) {
 // handle overflows(horizontal and vertical)
 // up and down movements
 
-// returns the line number of where the cursor(gap->c) is
-uint32_t get_cursor_line(const struct gap_buf* gap) {
-  char* buf = gap->start;
+// returns the line number of where *end is
+uint32_t get_line_no(char *ptr, const char* end) {
   uint32_t count = 1;
-  while (buf < gap->c) {
-    if (*buf == '\n') {
+  while (ptr <= end) {
+    if (*ptr == '\n') {
       count++;
     }
-    buf++;
+    ptr++;
   }  
   return count;
 }
@@ -151,12 +150,27 @@ uint32_t get_line_count(const struct gap_buf* gap) {
   return count;
 }
 
+void marker_next(struct gap_buf* gap) {
+  while (gap->marker <= gap->end && *gap->marker != '\n') gap->marker++;
+  gap->marker++;
+}
+
+// todo
+void marker_prev(struct gap_buf* gap) {
+  while (gap->marker >= gap->start && *gap->marker != '\n') gap->marker--;
+  if (gap->marker != gap->start) gap->marker++;
+}
+
 void draw_text(struct gap_buf* gap) {
   const uint32_t line_count = get_line_count(gap);
-  const uint32_t curs_line_pos = get_cursor_line(gap);
-  if (gap->marker == NULL) {
-    gap->marker = gap->start;
+  const uint32_t curs_line_no = get_line_no(gap->start, gap->c);
+  uint32_t marker_line_no = get_line_no(gap->start, gap->marker);
+
+  while (curs_line_no - marker_line_no > LINES - 4) {
+    marker_next(gap);
+    marker_line_no = get_line_no(gap->start, gap->marker);
   }
+
   char* pencil = gap->marker;
 
   erase();
@@ -201,6 +215,10 @@ int main() {
         break;
       case KEY_RIGHT:
         gap_right(&gap, 1);
+        break;
+      case KEY_UP:
+        break;
+      case KEY_DOWN:
         break;
       case KEY_BACKSPACE:
         gap_remove_ch(&gap);
