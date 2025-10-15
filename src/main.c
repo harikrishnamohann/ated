@@ -10,7 +10,7 @@ struct gap_buf {
   char* end;  // pointer to end of the buffer
   char* c;  // start of gap
   char* ce;  // end of gap
-  char* marker;  // characters are displayed from here (for vertical scrolling)
+  char* view;  // characters are displayed from here (for vertical scrolling)
   size_t capacity;  // total capacity of gap buffer. can grow
 };
 
@@ -26,7 +26,7 @@ struct gap_buf gap_init(size_t size) {
   gap.end = gap.start + size - 1;
   gap.c = gap.start;
   gap.ce = gap.end;
-  gap.marker = gap.start;
+  gap.view = gap.start;
   return gap;
 }
 
@@ -48,8 +48,8 @@ void gap_grow(struct gap_buf* gap) {
   uint32_t ce_offset = gap->end - gap->ce;
   uint32_t c_offset = gap->c - gap->start;
   uint32_t marker_offset = 0;
-  if (gap->marker) {  // if marker is initialized
-    marker_offset = gap->marker - gap->start;
+  if (gap->view) {  // if marker is initialized
+    marker_offset = gap->view - gap->start;
   }
 
   gap->capacity *= 2;  // capacity is doubled
@@ -67,7 +67,7 @@ void gap_grow(struct gap_buf* gap) {
       *(gap->end - ce_offset + i) = *(gap->ce + i); 
     }
   }
-  gap->marker = gap->start + marker_offset;
+  gap->view = gap->start + marker_offset;
   gap->ce = gap->end - ce_offset;  // this is the correct ce position
   gap->c = gap->start + c_offset;
 }
@@ -150,28 +150,36 @@ uint32_t get_line_count(const struct gap_buf* gap) {
   return count;
 }
 
-void marker_next(struct gap_buf* gap) {
-  while (gap->marker <= gap->end && *gap->marker != '\n') gap->marker++;
-  gap->marker++;
+void view_advance(struct gap_buf* gap) {
+  while (gap->view <= gap->end && *gap->view != '\n') gap->view++;
+  gap->view++;
 }
 
 // todo
-void marker_prev(struct gap_buf* gap) {
-  while (gap->marker >= gap->start && *gap->marker != '\n') gap->marker--;
-  if (gap->marker != gap->start) gap->marker++;
+void view_descent(struct gap_buf* gap) {
+  if (gap->view != gap->start) {
+    gap->view--;
+    while (*gap->view != '\n') gap->view--;
+    gap->view++;
+  }
 }
 
 void draw_text(struct gap_buf* gap) {
   const uint32_t line_count = get_line_count(gap);
   const uint32_t curs_line_no = get_line_no(gap->start, gap->c);
-  uint32_t marker_line_no = get_line_no(gap->start, gap->marker);
+  uint32_t view_line_no = get_line_no(gap->start, gap->view);
 
-  while (curs_line_no - marker_line_no > LINES - 4) {
-    marker_next(gap);
-    marker_line_no = get_line_no(gap->start, gap->marker);
+  while (curs_line_no - view_line_no > LINES - 4) {
+    view_advance(gap);
+    view_line_no = get_line_no(gap->start, gap->view);
   }
 
-  char* pencil = gap->marker;
+  if (curs_line_no - view_line_no < 4) {
+    view_descent(gap);
+    view_line_no = get_line_no(gap->start, gap->view);
+  }
+
+  char* pencil = gap->view;
 
   erase();
   uint32_t curs_x = 0, curs_y = 0, x = 0, y = 0;

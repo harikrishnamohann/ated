@@ -1,2 +1,2 @@
 #! /usr/bin/env bash
-gcc ./src/main.c -lncurses -o ated
+clang ./src/main.c -lncurses -o ated
