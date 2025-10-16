@@ -1,2 +1,2 @@
 # ated
-another text editor
+A hobby project for self satisfaction
