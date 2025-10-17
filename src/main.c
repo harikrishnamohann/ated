@@ -1,209 +1,84 @@
-#include <curses.h>
-#include <stdlib.h>
 #include <ncurses.h>
 #include <stdint.h>
-#include <string.h>
-
-// [start]abcd[c]_______________[ce]efg[end]
-struct gap_buf {
-  char* start;  // pointer to the start of buffer
-  char* end;  // pointer to end of the buffer
-  char* c;  // start of gap
-  char* ce;  // end of gap
-  char* view;  // characters are displayed from here (for vertical scrolling)
-  size_t capacity;  // total capacity of gap buffer. can grow
-};
-
-// initialize gap buffer of capacity = size
-struct gap_buf gap_init(size_t size) {
-  struct gap_buf gap;
-  gap.capacity = size;
-  gap.start = malloc(sizeof(char) * size);
-  if (!gap.start) {
-    perror("failed to initialize gap buffer.");
-  }
-  memset(gap.start, 0, size);
-  gap.end = gap.start + size - 1;
-  gap.c = gap.start;
-  gap.ce = gap.end;
-  gap.view = gap.start;
-  return gap;
-}
-
-// frees gap buffer
-void gap_free(struct gap_buf* gap) {
-  free(gap->start);
-  gap->start = NULL;
-  gap->end = NULL;
-  gap->c = NULL;
-  gap->ce = NULL;
-  gap->capacity = 0;
-}
-
-// grow operation of gap buffer
-void gap_grow(struct gap_buf* gap) {
-  // after realloc, memory addresses will change, hence the need to
-  // recalculate the pointers of gap buffer. Offsets are calculated
-  // to correctly setup c and ce pointers after realloc.
-  uint32_t ce_offset = gap->end - gap->ce;
-  uint32_t c_offset = gap->c - gap->start;
-  uint32_t marker_offset = 0;
-  if (gap->view) {  // if marker is initialized
-    marker_offset = gap->view - gap->start;
-  }
-
-  gap->capacity *= 2;  // capacity is doubled
-  gap->start = realloc(gap->start, gap->capacity);
-  if (!gap->start) {
-    perror("realloc failure");
-  }
-
-  gap->end = gap->start + gap->capacity - 1;
-
-  gap->ce = gap->end - (gap->capacity / 2) - ce_offset;
-  // this position is where ce pointed before realloc
-  if (ce_offset > 0) {  // copy characters after ce to the end if ce < end
-    for (int i = 0; i <= ce_offset; i++) {
-      *(gap->end - ce_offset + i) = *(gap->ce + i); 
-    }
-  }
-  gap->view = gap->start + marker_offset;
-  gap->ce = gap->end - ce_offset;  // this is the correct ce position
-  gap->c = gap->start + c_offset;
-}
-
-// insert operation of gap buffer.
-void gap_insert_ch(struct gap_buf* gap, char ch) {
-  if (gap->c >= gap->ce) {
-    gap_grow(gap);
-  }
-  *gap->c++ = ch;
-}
-
-// remove operation
-void gap_remove_ch(struct gap_buf* gap) {
-  if (gap->c > gap->start) {
-    gap->c--;
-  }
-}
-
-// moves the gap max `n_ch` times to the left
-void gap_left(struct gap_buf* gap, int n_ch) {
-  int offset = gap->c - gap->start;
-  if (offset > 0) {
-    for (int i = 0; offset > 0 && i < n_ch; i++) {
-      *gap->ce = *(gap->c - 1);
-      gap->ce--;
-      gap->c--;
-      offset--;
-    }
-  }
-}
-
-// moves the gap max `n_ch` times to the right
-void gap_right(struct gap_buf* gap, int n_ch) {
-  int offset = gap->end - gap->ce;
-  if (offset > 0) {
-    for (int i = 0; i < n_ch && offset > 0; i++) {
-      *gap->c = *(gap->ce + 1);
-      gap->ce++;
-      gap->c++;
-      offset--;
-    }
-  }
-}
+#include "gap_buffer.c"
 
 // handle overflows(horizontal and vertical)
 // up and down movements
 
-// returns the line number of where *end is
-uint32_t get_line_no(char *ptr, const char* end) {
-  uint32_t count = 1;
-  while (ptr <= end) {
+struct cursor;
+
+struct cursor {
+  uint32_t lc;
+  uint32_t curs;
+  uint32_t view;
+};
+
+struct cursor linefy(const struct gap_buf* gap) {
+  char* ptr = gap->start;  
+  struct cursor linfo = {1};
+  while (ptr < gap->c) {
+    if (ptr == gap->view) {
+      linfo.view = linfo.lc;
+    }
     if (*ptr == '\n') {
-      count++;
+      linfo.lc++;
     }
     ptr++;
-  }  
-  return count;
-}
-
-// returns the total number of lines in the gap buffer.
-uint32_t get_line_count(const struct gap_buf* gap) {
-  char* buf = gap->start;
-  uint32_t count = 1;
-  while (buf < gap->c) {
-    if (*buf == '\n') {
-      count++;
-    }
-    buf++;
   }
+  linfo.curs = linfo.lc;
   if (gap->ce != gap->end) {
-    buf = gap->ce + 1;
-    while (buf < gap->end) {
-      if (*buf == '\n') {
-        count++;
+    ptr = gap->ce + 1;
+    while (ptr <= gap->end) {
+      if (*ptr == '\n') {
+        linfo.lc++;
       }
-      buf++;
+      ptr++;
     }
   }
-  return count;
+  return linfo;
 }
 
 void view_advance(struct gap_buf* gap) {
-  while (gap->view <= gap->end && *gap->view != '\n') gap->view++;
+  while (gap->view < gap->c && *gap->view != '\n') gap->view++;
   gap->view++;
 }
 
-// todo
 void view_descent(struct gap_buf* gap) {
-  if (gap->view != gap->start) {
-    gap->view--;
-    while (*gap->view != '\n') gap->view--;
-    gap->view++;
-  }
+  if (*gap->view == '\n') gap->view--;
+  while (gap->view > gap->start && *(gap->view - 1) != '\n') gap->view--;
 }
 
 void draw_text(struct gap_buf* gap) {
-  const uint32_t line_count = get_line_count(gap);
-  const uint32_t curs_line_no = get_line_no(gap->start, gap->c);
-  uint32_t view_line_no = get_line_no(gap->start, gap->view);
-
-  while (curs_line_no - view_line_no > LINES - 4) {
-    view_advance(gap);
-    view_line_no = get_line_no(gap->start, gap->view);
-  }
-
-  if (curs_line_no - view_line_no < 4) {
+  struct cursor line = linefy(gap);
+  while (line.curs < line.view) { // i don't understand what's happening here.
     view_descent(gap);
-    view_line_no = get_line_no(gap->start, gap->view);
+    line = linefy(gap);
   }
-
-  char* pencil = gap->view;
+  while (line.curs - line.view >= LINES - 1) {
+    view_advance(gap);
+    line = linefy(gap);
+  }
 
   erase();
   uint32_t curs_x = 0, curs_y = 0, x = 0, y = 0;
-
-  while (pencil <= gap->end && y < LINES) {
-    if (pencil == gap->c) {
+  char* cursor = gap->view;
+  while (cursor <= gap->end && y < LINES - 1) {
+    if (cursor == gap->c) {
       curs_x = x;
       curs_y = y;
-      if (gap->ce == gap->end) {
-        break; 
-      }
-      pencil = gap->ce + 1;
+      if (gap->ce == gap->end) break; 
+      cursor = gap->ce + 1;
     }
-    mvaddch(y, x++, *pencil);
-    if (*pencil == '\n') {
+    mvaddch(y, x++, *cursor);
+    if (*cursor == '\n') {
       y++;
       x = 0;
     }
-    pencil++;
+    cursor++;
   }
+  mvprintw(LINES - 1, 1, "v:%ld c:%ld lc:%d", gap->view - gap->start, gap->c - gap->start, line.lc);
   move(curs_y, curs_x);
 }
-
-void gap_visualize(struct gap_buf gap);
 
 int main() {
   struct gap_buf gap = gap_init(1);
@@ -246,31 +121,3 @@ int main() {
   gap_free(&gap);
   return 0;
 }
-
-
-
-
-
-void gap_visualize(struct gap_buf gap) {
-    printf("capty:\t%lu\nstart:\t%p\nc:\t%p\nce:\t%p\nend:\t%p\n", gap.capacity, gap.start, gap.c,gap.ce,gap.end);
-    char* buf = gap.start;
-    printf("[s]");
-    
-    while (buf <= gap.end) {
-        if (buf == gap.c) {
-            printf("[");
-            while (buf < gap.ce) {
-                printf("_");
-                buf++;
-            }
-            printf("]");
-            buf++;
-            continue;
-        }
-        
-        printf("%c", *buf ? *buf : '.');
-        buf++;
-    }
-    
-    printf("[E]\n");
-} 
