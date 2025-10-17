@@ -48,10 +48,7 @@ void gap_grow(struct gap_buf* gap) {
   // to correctly setup c and ce pointers after realloc.
   uint32_t ce_offset = gap->end - gap->ce;
   uint32_t c_offset = gap->c - gap->start;
-  uint32_t marker_offset = 0;
-  if (gap->view) {  // if marker is initialized
-    marker_offset = gap->view - gap->start;
-  }
+  uint32_t view_offset = gap->view - gap->start;
 
   gap->capacity *= 2;  // capacity is doubled
   gap->start = realloc(gap->start, gap->capacity);
@@ -68,7 +65,7 @@ void gap_grow(struct gap_buf* gap) {
       *(gap->end - ce_offset + i) = *(gap->ce + i); 
     }
   }
-  gap->view = gap->start + marker_offset;
+  gap->view = gap->start + view_offset;
   gap->ce = gap->end - ce_offset;  // this is the correct ce position
   gap->c = gap->start + c_offset;
 }
