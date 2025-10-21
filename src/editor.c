@@ -1,8 +1,50 @@
 #include <ncurses.h>
 #include "gap_buffer.c"
 #include <stdbool.h>
-#include "include/editor.h"
+#include "include/ated.h"
 #include "include/rust_itypes.h"
+
+// lc_t will specify the maximum number of lines possible.
+#define lc_t u16
+#define SCROLL_MARGIN 3
+#define LNO_PADDING 8
+
+// An "_c" in the following struct names can be abbreviated as _component.
+ 
+// A line is an abstraction over the stream of text. Enables performing
+// operations on editor at line level. line map is like an associative array.
+// array index is line number, and its content is start position of line
+// inside the buffer.
+struct lines_c { 
+  u32 *map; // lines lookup table
+  lc_t count; // total number of lines
+  lc_t capacity; // capacity of *map
+};
+
+struct cursor_c { 
+  u16 x;
+  u16 y;
+}; 
+
+// view component marks the begin position of text drawing, as well
+// as it makes scrolling possible.
+struct view_c {
+  u32 offset; // logical index of buffer where the view should begin
+  u32 x;
+  lc_t y;
+};
+
+typedef struct {
+  u16 mods; // stores all modifiers used in the editor.
+  // states should only be modified through the designated methods.
+  struct cursor_c curs;
+  struct view_c view;
+  struct lines_c lines;
+} Editor;
+
+enum editor_modifiers {
+  _lock_cursx = 0x8000, // prevent writing to editor.curs.x; method: editor_update_cursx()
+};
 
 static inline void _set_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods | new_mods; }
 static inline void _reset_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods & ( new_mods ^ 0xffff); }
@@ -44,6 +86,14 @@ static void _update_view(Editor* ed, GapBuffer* gap, u16 win_h, u16 win_w) {
   }
   while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) { // upwards
     ed->view.offset = ed->lines.map[--ed->view.y];
+  }
+  u16 curs_len = _lnend(ed, gap, ed->curs.y) - _curspos(ed, 0);
+  u16 curs_pos = gap->c - _curspos(ed, 0);
+  while (ed->view.x < curs_len && curs_pos - ed->view.x >= win_w - LNO_PADDING - SCROLL_MARGIN - 1) {
+    ed->view.x++;
+  }
+  while (ed->view.x > 0 && curs_pos <= ed->view.x + SCROLL_MARGIN) {
+    ed->view.x--;
   }
 }
 
@@ -171,18 +221,19 @@ void editor_draw(WINDOW* edwin, Editor* ed, GapBuffer* gap) {
 
   for (u32 ln = 0; ln < win_h  && ln + ed->view.y < ed->lines.count; ln++) {
     u32 lnend = _lnend(ed, gap, ln + ed->view.y);
-    if (lnend != LN_EMPTY) {
-      mvwprintw(edwin, ln, 1, "%5d ", ln + ed->view.y + 1);
+    if (lnend == LN_EMPTY) continue;
+    u32 len = lnend - _lnstart(ed, ln + ed->view.y) + 1;
+    mvwprintw(edwin, ln, 1, "%5d ", ln + ed->view.y + 1);
 
-      for (u16 x = 0; x + _viewpos(ed, ln) <= lnend && x + LNO_PADDING < win_w - 1; x++) {
-        u8 ch = gap_getch(gap, x + _viewpos(ed, ln));
-        if (ch && ch != '\n') mvwaddch(edwin, ln, x + LNO_PADDING, ch);
-      }
-
-      mvwprintw(edwin, ln + 1, 1, "%5d ", ln + ed->view.y + 2);
+    for (u16 x = 0; x + ed->view.x < len && x + LNO_PADDING < win_w - 1; x++) {
+      u8 ch = gap_getch(gap, x + _viewpos(ed, ln) + ed->view.x);
+      if (ch == '\n') break;
+      if (ch) mvwaddch(edwin, ln, x + LNO_PADDING, ch);
     }
+
+    mvwprintw(edwin, ln + 1, 1, "%5d ", ln + ed->view.y + 2);
   }
-  wmove(edwin, ed->curs.y - ed->view.y, MIN(win_w - 1 ,gap->c - _curspos(ed, 0) + LNO_PADDING));
+  wmove(edwin, ed->curs.y - ed->view.y, MIN(win_w - 1 ,gap->c - _curspos(ed, 0) + LNO_PADDING - ed->view.x));
 }
 
 void editor_process(Editor* ed, WINDOW* edwin) {
@@ -222,6 +273,6 @@ TODO
  - split editor operations into component level [v]
  - make editior updation incremental [v] NOTE I can do this using gap buffer
  - make Editor window attachable [v]
- - handle horizontal text overflows [_]
+ - handle horizontal text overflows [v]
  - make a header file and compile this separately once i am done with this[_]
 */
