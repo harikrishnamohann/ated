@@ -5,108 +5,101 @@
 #include <stdint.h>
 #include <string.h>
 
+#define GAP_RESIZE_FACTOR 1024
+#define GAP_WIDTH(gap) (gap->ce - gap->c)
+#define GAP_CH_COUNT(gap) (gap->end - GAP_WIDTH(gap))
+
 // [start]abcd[c]_______________[ce]efg[end]
-struct gap_buf {
-  char* start;  // pointer to the start of buffer
-  char* end;  // pointer to end of the buffer
-  char* c;  // start of gap
-  char* ce;  // end of gap
-  char* view;  // characters are displayed from here (for vertical scrolling)
-  size_t capacity;  // total capacity of gap buffer. can grow
-};
+typedef struct {
+  uint8_t* start;  // pointer to the start of buffer
+  int32_t end;  // offset to end of the buffer
+  int32_t c;  // offset to start of gap or cursor
+  int32_t ce;  // offset to end of gap
+  int32_t capacity;  // total capacity of gap buffer. can grow
+} GapBuffer;
 
 // initialize gap buffer of capacity = size
-struct gap_buf gap_init(size_t size) {
-  struct gap_buf gap;
-  gap.capacity = size;
-  gap.start = malloc(sizeof(char) * size);
+GapBuffer gap_init(uint32_t size) {
+  GapBuffer gap = {0};
+  gap.start = malloc(sizeof(uint8_t) * size);
   if (!gap.start) {
     perror("failed to initialize gap buffer.");
+    exit(-1);
   }
   memset(gap.start, 0, size);
-  gap.end = gap.start + size - 1;
-  gap.c = gap.start;
-  gap.ce = gap.end;
-  gap.view = gap.start;
+  gap.capacity = size;
+  gap.ce = gap.end = size - 1;
   return gap;
 }
 
 // frees gap buffer
-void gap_free(struct gap_buf* gap) {
+void gap_free(GapBuffer* gap) {
   free(gap->start);
   gap->start = NULL;
-  gap->end = NULL;
-  gap->c = NULL;
-  gap->ce = NULL;
-  gap->capacity = 0;
+  gap->end = gap->c = gap->ce = gap->capacity = 0;
 }
 
 // grow operation of gap buffer
-void gap_grow(struct gap_buf* gap) {
-  // after realloc, memory addresses will change, hence the need to
-  // recalculate the pointers of gap buffer. Offsets are calculated
-  // to correctly setup c and ce pointers after realloc.
-  uint32_t ce_offset = gap->end - gap->ce;
-  uint32_t c_offset = gap->c - gap->start;
-  uint32_t view_offset = gap->view - gap->start;
-
-  gap->capacity *= 2;  // capacity is doubled
+void gap_grow(GapBuffer* gap) {
+  int32_t ce_offset = gap->end - gap->ce;
+  gap->capacity += GAP_RESIZE_FACTOR;
   gap->start = realloc(gap->start, gap->capacity);
   if (!gap->start) {
     perror("realloc failure");
+    exit(-1);
   }
 
-  gap->end = gap->start + gap->capacity - 1;
-
-  gap->ce = gap->end - (gap->capacity / 2) - ce_offset;
-  // this position is where ce pointed before realloc
-  if (ce_offset > 0) {  // copy characters after ce to the end if ce < end
-    for (int i = 0; i <= ce_offset; i++) {
-      *(gap->end - ce_offset + i) = *(gap->ce + i); 
+  gap->end = gap->capacity - 1;
+  gap->ce = gap->end - ce_offset;
+  if (gap->end > gap->ce) {  // copy characters after ce to the end if ce < end
+    for (uint32_t i = 0; i <= ce_offset; i++) {
+      *(gap->start + gap->end - ce_offset + i) = *(gap->start + gap->ce + i); 
     }
   }
-  gap->view = gap->start + view_offset;
-  gap->ce = gap->end - ce_offset;  // this is the correct ce position
-  gap->c = gap->start + c_offset;
 }
 
 // insert operation of gap buffer.
-void gap_insert_ch(struct gap_buf* gap, char ch) {
+void gap_insertc(GapBuffer* gap, uint8_t ch) {
   if (gap->c >= gap->ce) {
     gap_grow(gap);
   }
-  *gap->c++ = ch;
+  *(gap->start + gap->c) = ch;
+  gap->c++;
 }
 
 // remove operation
-void gap_remove_ch(struct gap_buf* gap) {
-  if (gap->c > gap->start) {
+void gap_removec(GapBuffer* gap) {
+  if (gap->c > 0) {
     gap->c--;
   }
 }
 
 // moves the gap max `n_ch` times to the left
-void gap_left(struct gap_buf* gap, int n_ch) {
-  int offset = gap->c - gap->start;
-  if (offset > 0) {
-    for (int i = 0; offset > 0 && i < n_ch; i++) {
-      *gap->ce = *(gap->c - 1);
-      gap->ce--;
-      gap->c--;
-      offset--;
-    }
+void gap_left(GapBuffer* gap, uint32_t n_ch) {
+  for (uint32_t i = 0; gap->c > 0 && i < n_ch; i++) {
+    *(gap->start + gap->ce) = *(gap->start + gap->c - 1);
+    gap->ce--;
+    gap->c--;
   }
 }
 
 // moves the gap max `n_ch` times to the right
-void gap_right(struct gap_buf* gap, int n_ch) {
-  int offset = gap->end - gap->ce;
-  if (offset > 0) {
-    for (int i = 0; i < n_ch && offset > 0; i++) {
-      *gap->c = *(gap->ce + 1);
-      gap->ce++;
-      gap->c++;
-      offset--;
-    }
+void gap_right(GapBuffer* gap, uint32_t n_ch) {
+  for (uint32_t i = 0; gap->ce < gap->end && i < n_ch; i++) {
+    *(gap->start + gap->c) = *(gap->start + gap->ce + 1);
+    gap->ce++;
+    gap->c++;
   }
 }
+
+uint8_t gap_getch(const GapBuffer* gap, uint32_t index) {
+  if (index < GAP_CH_COUNT(gap)) {
+    if (index >= gap->c) {
+      index = gap->ce + (index - gap->c) + 1;
+    }
+    return gap->start[index];
+  }
+  return 0;
+}
+
+#undef GAP_RESIZE_FACTOR
