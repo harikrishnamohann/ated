@@ -15,10 +15,19 @@ typedef struct {
 } GapBuffer;
 
 #define GAP_RESIZE_FACTOR 1024
+
+// expands to give the width of gap in gap buffer
 #define GAPBUF_GAP_WIDTH(gap) (gap->ce - gap->c + 1)
+
+// length of gap buffer without accounting for the gap
 #define GAPBUF_LEN(gap) (gap->c + (gap->end - gap->ce))
+
 // buffer_index = logical_index - gap->c + gap->ce + 1
+// 
+// buf_index => used to index the actual gap buffer.
 #define GAPBUF_GET_BUFFER_INDEX(gap, logical_index) (((logical_index) >= gap->c) ? (logical_index) - gap->c + gap->ce + 1 : (logical_index))
+
+// logical_index => used to index the gap buffer as if there were no gap.
 #define GAPBUF_GET_LOGICAL_INDEX(gap, buffer_index) (((buffer_index) > gap->ce) ? (buffer_index) + gap->c - gap->ce - 1 : (buffer_index))
 
 // initialize gap buffer of capacity = size
@@ -95,6 +104,7 @@ void gap_right(GapBuffer* gap) {
   }
 }
 
+// access the gap buffer using logical_indexing
 u8 gap_getch(const GapBuffer* gap, usize logical_index) {
   if (logical_index < GAPBUF_LEN(gap))
     return gap->start[GAPBUF_GET_BUFFER_INDEX(gap, logical_index)];
