@@ -10,6 +10,8 @@
 #define lc_t u16
 #define min(a,b) ((a) < (b) ? (a) : (b))
 
+#define SCROLL_STEPS 1
+
 struct span {
   lc_t begin;
   lc_t end;
@@ -106,7 +108,6 @@ void editor_linefy_buf(Editor* ed, GapBuffer* gap) {
   }
 }
 
-#define SCROLL_STEPS 2
 void editor_curs_mov_up(Editor* ed, GapBuffer* gap, u16 steps) {
   if (ed->curs.lno == 0) return;
   steps = (steps > ed->curs.lno) ? ed->curs.lno : steps;
