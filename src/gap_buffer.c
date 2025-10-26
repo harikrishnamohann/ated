@@ -2,26 +2,29 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
+#include "include/rust_itypes.h"
 #include <string.h>
-
-#define GAP_RESIZE_FACTOR 1024
-#define GAP_WIDTH(gap) (gap->ce - gap->c)
-#define GAP_CH_COUNT(gap) (gap->end - GAP_WIDTH(gap))
 
 // [start]abcd[c]_______________[ce]efg[end]
 typedef struct {
-  uint8_t* start;  // pointer to the start of buffer
-  int32_t end;  // offset to end of the buffer
-  int32_t c;  // offset to start of gap or cursor
-  int32_t ce;  // offset to end of gap
-  int32_t capacity;  // total capacity of gap buffer. can grow
+  u8* start;  // pointer to the start of buffer
+  usize end;  // offset to end of the buffer
+  usize c;  // offset to start of gap or cursor
+  usize ce;  // offset to end of gap
+  usize capacity;  // total capacity of gap buffer. can grow
 } GapBuffer;
 
+#define GAP_RESIZE_FACTOR 1024
+#define GAPBUF_GAP_WIDTH(gap) (gap->ce - gap->c + 1)
+#define GAPBUF_LEN(gap) (gap->c + (gap->end - gap->ce))
+// buffer_index = logical_index - gap->c + gap->ce + 1
+#define GAPBUF_GET_BUFFER_INDEX(gap, logical_index) (((logical_index) >= gap->c) ? (logical_index) - gap->c + gap->ce + 1 : (logical_index))
+#define GAPBUF_GET_LOGICAL_INDEX(gap, buffer_index) (((buffer_index) > gap->ce) ? (buffer_index) + gap->c - gap->ce - 1 : (buffer_index))
+
 // initialize gap buffer of capacity = size
-GapBuffer gap_init(uint32_t size) {
+GapBuffer gap_init(usize size) {
   GapBuffer gap = {0};
-  gap.start = malloc(sizeof(uint8_t) * size);
+  gap.start = malloc(sizeof(u8) * size);
   if (!gap.start) {
     perror("failed to initialize gap buffer.");
     exit(-1);
@@ -41,7 +44,7 @@ void gap_free(GapBuffer* gap) {
 
 // grow operation of gap buffer
 void gap_grow(GapBuffer* gap) {
-  int32_t ce_offset = gap->end - gap->ce;
+  isize ce_offset = gap->end - gap->ce;
   gap->capacity += GAP_RESIZE_FACTOR;
   gap->start = realloc(gap->start, gap->capacity);
   if (!gap->start) {
@@ -52,14 +55,14 @@ void gap_grow(GapBuffer* gap) {
   gap->end = gap->capacity - 1;
   gap->ce = gap->end - ce_offset;
   if (gap->end > gap->ce) {  // copy characters after ce to the end if ce < end
-    for (uint32_t i = 0; i <= ce_offset; i++) {
+    for (usize i = 0; i <= ce_offset; i++) {
       *(gap->start + gap->end - ce_offset + i) = *(gap->start + gap->ce + i); 
     }
   }
 }
 
 // insert operation of gap buffer.
-void gap_insertc(GapBuffer* gap, uint8_t ch) {
+void gap_insertc(GapBuffer* gap, u8 ch) {
   if (gap->c >= gap->ce) {
     gap_grow(gap);
   }
@@ -75,8 +78,8 @@ void gap_removec(GapBuffer* gap) {
 }
 
 // moves the gap max `n_ch` times to the left
-void gap_left(GapBuffer* gap, uint32_t n_ch) {
-  for (uint32_t i = 0; gap->c > 0 && i < n_ch; i++) {
+void gap_left(GapBuffer* gap) {
+  if (gap->c > 0) {
     *(gap->start + gap->ce) = *(gap->start + gap->c - 1);
     gap->ce--;
     gap->c--;
@@ -84,21 +87,17 @@ void gap_left(GapBuffer* gap, uint32_t n_ch) {
 }
 
 // moves the gap max `n_ch` times to the right
-void gap_right(GapBuffer* gap, uint32_t n_ch) {
-  for (uint32_t i = 0; gap->ce < gap->end && i < n_ch; i++) {
+void gap_right(GapBuffer* gap) {
+  if (gap->ce < gap->end) {
     *(gap->start + gap->c) = *(gap->start + gap->ce + 1);
     gap->ce++;
     gap->c++;
   }
 }
 
-uint8_t gap_getch(const GapBuffer* gap, uint32_t index) {
-  if (index < GAP_CH_COUNT(gap)) {
-    if (index >= gap->c) {
-      index = gap->ce + (index - gap->c) + 1;
-    }
-    return gap->start[index];
-  }
+u8 gap_getch(const GapBuffer* gap, usize logical_index) {
+  if (logical_index < GAPBUF_LEN(gap))
+    return gap->start[GAPBUF_GET_BUFFER_INDEX(gap, logical_index)];
   return 0;
 }
 
