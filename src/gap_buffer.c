@@ -8,10 +8,10 @@
 // [start]abcd[c]_______________[ce]efg[end]
 typedef struct {
   u8* start;  // pointer to the start of buffer
-  usize end;  // offset to end of the buffer
-  usize c;  // offset to start of gap or cursor
-  usize ce;  // offset to end of gap
-  usize capacity;  // total capacity of gap buffer. can grow
+  u32 end;  // offset to end of the buffer
+  u32 c;  // offset to start of gap or cursor
+  u32 ce;  // offset to end of gap
+  u32 capacity;  // total capacity of gap buffer. can grow
 } GapBuffer;
 
 #define GAP_RESIZE_FACTOR 1024
@@ -31,7 +31,7 @@ typedef struct {
 #define GAPBUF_GET_LOGICAL_INDEX(gap, buffer_index) (((buffer_index) > gap->ce) ? (buffer_index) + gap->c - gap->ce - 1 : (buffer_index))
 
 // initialize gap buffer of capacity = size
-GapBuffer gap_init(usize size) {
+GapBuffer gap_init(u32 size) {
   GapBuffer gap = {0};
   gap.start = malloc(sizeof(u8) * size);
   if (!gap.start) {
@@ -64,7 +64,7 @@ void gap_grow(GapBuffer* gap) {
   gap->end = gap->capacity - 1;
   gap->ce = gap->end - ce_offset;
   if (gap->end > gap->ce) {  // copy characters after ce to the end if ce < end
-    for (usize i = 0; i <= ce_offset; i++) {
+    for (u32 i = 0; i <= ce_offset; i++) {
       *(gap->start + gap->end - ce_offset + i) = *(gap->start + gap->ce + i); 
     }
   }
@@ -105,7 +105,7 @@ void gap_right(GapBuffer* gap) {
 }
 
 // access the gap buffer using logical_indexing
-u8 gap_getch(const GapBuffer* gap, usize logical_index) {
+u8 gap_getch(const GapBuffer* gap, u32 logical_index) {
   if (logical_index < GAPBUF_LEN(gap))
     return gap->start[GAPBUF_GET_BUFFER_INDEX(gap, logical_index)];
   return 0;
