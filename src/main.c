@@ -119,7 +119,7 @@ void editor_curs_mov_up(Editor* ed, GapBuffer* gap, u16 steps) {
 // should be set before calling this method inorder to preserve cursor position
 // in x direction.
 void editor_curs_mov_down(Editor* ed, GapBuffer* gap, u16 steps) {
-  if (ed->curs.y == ed->lines.count - 1) return;
+  if (ed->curs.y == ed->lines.count) return;
   steps = (ed->curs.y + steps > ed->lines.count - 1) ? ed->lines.count - ed->curs.y - 1 : steps;
   u16 target_lno = ed->curs.y + steps;
   u16 target_ln_len = editor_lnend(ed, gap, target_lno) - ed->lines.map[target_lno];
