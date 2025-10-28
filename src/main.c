@@ -106,7 +106,7 @@ u32 editor_lnend(Editor* ed, GapBuffer* gap, lc_t lno) {
 }
 
 // expand lines.map, allocates more memory for ln.map if needed.
-void lines_increment_count(struct lines_c* ln) {
+void lines_increment_lc(struct lines_c* ln) {
   if (ln->count >= ln->capacity) {
     ln->capacity += ALLOC_STEP;
     ln->map = realloc(ln->map, sizeof(u32) * ln->capacity);
@@ -135,7 +135,8 @@ void editor_draw(Editor* ed, GapBuffer* gap) {
     u32 lnend = editor_lnend(ed, gap, ln + ed->view.y);
     if (lnend != LN_EMPTY) {
       for (u32 i = ed->lines.map[ln + ed->view.y]; i <= lnend; i++) {
-        addch(gap_getch(gap, i));
+        u8 ch = gap_getch(gap, i);
+        if (ch) addch(ch);
       }
     }
   }
@@ -164,7 +165,7 @@ static inline void editor_decrement_next_lines(Editor* ed) {
 
 // makes a new line entry in the lines.map at curs.y + 1 position. expect a non updated cursor component.
 void editor_add_nl(Editor* ed, u32 logical_pos) {
-  lines_increment_count(&ed->lines);
+  lines_increment_lc(&ed->lines);
   for (lc_t i = ed->lines.count - 1; i > ed->curs.y + 1; i--) {
     ed->lines.map[i] = ed->lines.map[i - 1]; // shifting right from curs_lno + 1 pos
   }
@@ -240,13 +241,15 @@ void editor_curs_mov_up(Editor* ed, GapBuffer* gap, u16 steps) {
 
 // // moves cursor down
 void editor_curs_mov_down(Editor* ed, GapBuffer* gap, u16 steps) {
-  if (ed->curs.y == ed->lines.count - 1) return;
+  if (ed->curs.y >= ed->lines.count - 1) return;
   steps = (ed->curs.y + steps > ed->lines.count - 1) ? ed->lines.count - ed->curs.y - 1 : steps;
   u16 target_lno = ed->curs.y + steps;
-  u16 target_ln_len = editor_lnend(ed, gap, target_lno) - ed->lines.map[target_lno];
+  u32 ln_len = editor_lnend(ed, gap, target_lno);
+  if (ln_len == LN_EMPTY) return;
+  u16 target_ln_len = ln_len - ed->lines.map[target_lno];
   u16 target_pos = ed->lines.map[target_lno] + min(ed->curs.x, target_ln_len);
   while (gap->c < target_pos) gap_right(gap);
-  ed->curs.y++;
+  ed->curs.y += steps;
 }
 
 i32 main() {
