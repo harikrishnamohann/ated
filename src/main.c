@@ -77,12 +77,14 @@ static inline void editor_update_cursx(Editor* ed, u16 pos) { if (!editor_has_mo
 // initializes Editor entity.
 Editor editor_init(lc_t lc) {
   Editor ed = {0};
-  ed.lines.capacity = lc,
+  ed.lines.capacity = lc;
+  ed.lines.count = 1;
   ed.lines.map = (u32*)malloc(sizeof(u32) * lc);
   if (!ed.lines.map) {
     perror("failed to do malloc for lines.map");
     exit(-1);
   }
+  memset(ed.lines.map, 0, sizeof(u32) * lc);
   return ed;
 }
 
@@ -102,30 +104,6 @@ u32 editor_lnend(Editor* ed, GapBuffer* gap, lc_t lno) {
   return i;
 }
 
-// moves the cursor vertically up by `steps` times. The lock_cursx state
-// should be set before calling this method inorder to preserve cursor position
-// in x direction.
-void editor_curs_mov_up(Editor* ed, GapBuffer* gap, u16 steps) {
-  if (ed->curs.y == 0) return;
-  steps = (steps > ed->curs.y) ? ed->curs.y : steps;
-  u16 target_lno = ed->curs.y - steps;
-  u16 target_ln_len = editor_lnend(ed,gap, target_lno) - ed->lines.map[target_lno];
-  u16 target_pos = ed->lines.map[target_lno] + min(ed->curs.x, target_ln_len);
-  while (gap->c > target_pos) gap_left(gap);
-}
-
-// moves the cursor vertically down by `steps` times. The lock_cursx state
-// should be set before calling this method inorder to preserve cursor position
-// in x direction.
-void editor_curs_mov_down(Editor* ed, GapBuffer* gap, u16 steps) {
-  if (ed->curs.y == ed->lines.count) return;
-  steps = (ed->curs.y + steps > ed->lines.count - 1) ? ed->lines.count - ed->curs.y - 1 : steps;
-  u16 target_lno = ed->curs.y + steps;
-  u16 target_ln_len = editor_lnend(ed, gap, target_lno) - ed->lines.map[target_lno];
-  u16 target_pos = ed->lines.map[target_lno] + min(ed->curs.x, target_ln_len);
-  while (gap->c < target_pos) gap_right(gap);
-}
-
 void lines_increment_count(struct lines_c* ln) {
   if (ln->count >= ln->capacity) {
     ln->capacity += ALLOC_STEP;
@@ -138,42 +116,16 @@ void lines_increment_count(struct lines_c* ln) {
   ln->count++;
 }
 
-void editor_update_lines(Editor* ed, GapBuffer* gap) {
-  if (GAPBUF_LEN(gap) == 0) {
-    ed->lines.count = 0;
-    return;
-  }
-  lc_t lc = 0;
-  ed->lines.map[lc] = 0;
-  u32 len = GAPBUF_LEN(gap);
-  for (u32 i = 0; i < len; i++) {
-    if (gap_getch(gap, i) == '\n') {
-      ed->lines.map[++lc] = i+1;
-      lines_increment_count(&ed->lines);
-    }
-  }
-  ed->lines.count = gap_getch(gap, len - 1) == '\n' ? lc : lc + 1;
-}
-
-void editor_update_curs(Editor* ed, GapBuffer* gap) {
-  lc_t curs_lno = 0;
-  for (u32 i = 0; i < gap->c; i++) {
-    if (gap->start[i] == '\n') curs_lno++;
-  }
-  ed->curs.y = curs_lno;
-  editor_update_cursx(ed, gap->c - ed->lines.map[curs_lno]);
-}
-
 // updates the view component of editor, expects an updated curs component
 void editor_update_view(Editor* ed, GapBuffer* gap) {
   while (ed->curs.y - ed->view.y > LINES - 1 - SCROLL_MARGIN) {
     ed->view.offset = ed->lines.map[++ed->view.y];
-    editor_update_curs(ed, gap);
+    ed->curs.y++;
   }
-  while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) {
-    ed->view.offset = ed->lines.map[--ed->view.y];
-    editor_update_curs(ed, gap);
-  }
+  // while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) {
+  //   ed->view.offset = ed->lines.map[--ed->view.y];
+  //   ed->curs.y--;
+  // }
 }
 
 // renders the gap buffer as desired, expect an updated view component
@@ -201,6 +153,90 @@ void editor_handle_implicit_mods(Editor* ed, u32 ch) {
   editor_reset_mods(ed, _lock_cursx);
 }
 
+static inline void editor_increment_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]++; }
+static inline void editor_decrement_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--; }
+
+void editor_add_nl(Editor* ed, u32 logical_pos) {
+  lines_increment_count(&ed->lines);
+  for (lc_t i = ed->lines.count - 1; i > ed->curs.y + 1; i--) {
+    ed->lines.map[i] = ed->lines.map[i - 1]; // shifting right from curs_lno + 1 pos
+  }
+  // curs_lno + 1 position should be unoccupied now
+  ed->lines.map[ed->curs.y + 1] = logical_pos; // new position is inserted there
+}
+
+void editor_remove_nl(Editor* ed) {
+  for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) {
+    ed->lines.map[i - 1] = ed->lines.map[i];
+  }
+  ed->lines.count--;
+}
+
+void editor_insertch(Editor* ed, GapBuffer* gap, u32 ch) {
+  gap_insertch(gap, ch);
+  editor_increment_next_lines(ed);
+  if (ch == '\n') {
+    editor_add_nl(ed, gap->c);
+    ed->curs.y++;
+  }
+  editor_update_cursx(ed, gap->c - ed->lines.map[ed->curs.y]);
+}
+
+void editor_removech(Editor* ed, GapBuffer* gap) {
+  u8 removing_ch = gap_getch(gap, gap->c - 1);
+  if (!removing_ch) return;
+  editor_decrement_next_lines(ed);
+  gap_removech(gap);
+  if (removing_ch == '\n') {
+    editor_remove_nl(ed);
+    ed->curs.y--;
+  }
+  editor_update_cursx(ed, gap->c - ed->lines.map[ed->curs.y]);
+}
+
+void editor_curs_mov_left(Editor* ed, GapBuffer* gap) {
+  if (gap->c > 0) {
+    u8 prev_ch = gap->start[gap->c - 1];
+    if (prev_ch == '\n') {
+      ed->curs.y--;
+    }
+    gap_left(gap);
+    editor_update_cursx(ed, gap->c - ed->lines.map[ed->curs.y]);
+  }
+}
+
+void editor_curs_mov_right(Editor* ed, GapBuffer* gap) {
+  u8 next_ch = gap_getch(gap, gap->c);
+  if (next_ch != 0) {
+    if (next_ch == '\n') ed->curs.y++;
+    gap_right(gap);
+    editor_update_cursx(ed, gap->c - ed->lines.map[ed->curs.y]);
+  }
+}
+
+// moves the cursor vertically up by `steps` times. The lock_cursx state
+// should be set before calling this method inorder to preserve curs.x
+void editor_curs_mov_up(Editor* ed, GapBuffer* gap, u16 steps) {
+  if (ed->curs.y == 0) return;
+  steps = (steps > ed->curs.y) ? ed->curs.y : steps;
+  u16 target_lno = ed->curs.y - steps;
+  u16 target_ln_len = editor_lnend(ed,gap, target_lno) - ed->lines.map[target_lno];
+  u16 target_pos = ed->lines.map[target_lno] + min(ed->curs.x, target_ln_len);
+  while (gap->c > target_pos) gap_left(gap);
+  ed->curs.y -= steps;
+}
+
+// // moves cursor down
+void editor_curs_mov_down(Editor* ed, GapBuffer* gap, u16 steps) {
+  if (ed->curs.y == ed->lines.count - 1) return;
+  steps = (ed->curs.y + steps > ed->lines.count - 1) ? ed->lines.count - ed->curs.y - 1 : steps;
+  u16 target_lno = ed->curs.y + steps;
+  u16 target_ln_len = editor_lnend(ed, gap, target_lno) - ed->lines.map[target_lno];
+  u16 target_pos = ed->lines.map[target_lno] + min(ed->curs.x, target_ln_len);
+  while (gap->c < target_pos) gap_right(gap);
+  ed->curs.y++;
+}
+
 i32 main() {
   Editor ed = editor_init(ALLOC_STEP);
   GapBuffer gap = gap_init(ALLOC_STEP);
@@ -215,32 +251,14 @@ i32 main() {
   while ((ch = getch()) != 27) {
     editor_handle_implicit_mods(&ed, ch); // states should be set before doing anything.
     switch (ch) {
-      case KEY_LEFT:
-        gap_left(&gap);
-        break;
-      case KEY_RIGHT:
-        gap_right(&gap);
-        break;
-      case KEY_UP:
-        editor_curs_mov_up(&ed, &gap, 1);
-        break;
-      case KEY_DOWN:
-        editor_curs_mov_down(&ed, &gap, 1);
-        break;
-      case KEY_BACKSPACE:
-        gap_removec(&gap);
-        editor_update_lines(&ed, &gap);
-        break;
-      case KEY_ENTER:
-        gap_insertc(&gap, '\n');
-        editor_update_lines(&ed, &gap);
-        break;
-      default:
-        gap_insertc(&gap, ch);
-        editor_update_lines(&ed, &gap);
-        break;
+      case KEY_LEFT: editor_curs_mov_left(&ed, &gap); break;
+      case KEY_RIGHT: editor_curs_mov_right(&ed, &gap); break;
+      case KEY_UP: editor_curs_mov_up(&ed, &gap, 1); break;
+      case KEY_DOWN: editor_curs_mov_down(&ed, &gap, 1); break;
+      case KEY_BACKSPACE: editor_removech(&ed, &gap); break;
+      case KEY_ENTER: editor_insertch(&ed, &gap, '\n'); break;
+      default: editor_insertch(&ed, &gap, ch); break;
     }
-    editor_update_curs(&ed, &gap);
     editor_update_view(&ed, &gap);
     editor_draw(&ed, &gap);
     refresh();

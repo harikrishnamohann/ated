@@ -71,7 +71,7 @@ void gap_grow(GapBuffer* gap) {
 }
 
 // insert operation of gap buffer.
-void gap_insertc(GapBuffer* gap, u8 ch) {
+void gap_insertch(GapBuffer* gap, u8 ch) {
   if (gap->c >= gap->ce) {
     gap_grow(gap);
   }
@@ -80,7 +80,7 @@ void gap_insertc(GapBuffer* gap, u8 ch) {
 }
 
 // remove operation
-void gap_removec(GapBuffer* gap) {
+void gap_removech(GapBuffer* gap) {
   if (gap->c > 0) {
     gap->c--;
   }
