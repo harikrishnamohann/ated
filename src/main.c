@@ -59,7 +59,7 @@ typedef struct {
 
 // all the modifier types are defined here
 enum modifiers {
-  _lock_cursx = 0x8000, // prevent writing to editor.curs.x; method: editor_update_cursx()
+  _lock_cursx = 0x1000, // prevent writing to editor.curs.x; method: editor_update_cursx()
 };
 
 // used to set modifier. you can input multiple modifier using the OR operator
@@ -69,15 +69,14 @@ static inline void editor_set_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mo
 static inline void editor_reset_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods & ( new_mods ^ 0xffff); }
 
 // used to check modifiers
-// static inline bool editor_has_mods(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
+static inline bool editor_has_mods(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
 
 // updates editor.curs.x to pos if the lock_cursx state is set to zero.
-static inline void editor_update_cursx(Editor* ed, u16 pos) { if (!(ed->mods & _lock_cursx)) ed->curs.x = pos; }
+static inline void editor_update_cursx(Editor* ed, u16 pos) { if (!editor_has_mods(ed, _lock_cursx)) ed->curs.x = pos; }
 
 // initializes Editor entity.
 Editor editor_init(lc_t lc) {
-  Editor ed;
-  ed.mods = 0x0;
+  Editor ed = {0};
   ed.lines.capacity = lc,
   ed.lines.map = (u32*)malloc(sizeof(u32) * lc);
   if (!ed.lines.map) {
@@ -161,7 +160,6 @@ void editor_update_curs(Editor* ed, GapBuffer* gap) {
   for (u32 i = 0; i < gap->c; i++) {
     if (gap->start[i] == '\n') curs_lno++;
   }
-  ed->curs.y = curs_lno;
   ed->curs.y = curs_lno;
   editor_update_cursx(ed, gap->c - ed->lines.map[curs_lno]);
 }
