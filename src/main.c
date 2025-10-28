@@ -3,6 +3,7 @@ TODO
  - up and down movements [v]
  - snap scrolling [v]
  - split editor operations into component level [v]
+ - make editior updation incremental [v]
  - handle horizontal text overflows [_]
  - make Editor window attachable [_]
 */
@@ -59,7 +60,7 @@ typedef struct {
 
 // all the modifier types are defined here
 enum modifiers {
-  _lock_cursx = 0x1000, // prevent writing to editor.curs.x; method: editor_update_cursx()
+  _lock_cursx = 0x8000, // prevent writing to editor.curs.x; method: editor_update_cursx()
 };
 
 // used to set modifier. you can input multiple modifier using the OR operator
@@ -104,6 +105,7 @@ u32 editor_lnend(Editor* ed, GapBuffer* gap, lc_t lno) {
   return i;
 }
 
+// expand lines.map, allocates more memory for ln.map if needed.
 void lines_increment_count(struct lines_c* ln) {
   if (ln->count >= ln->capacity) {
     ln->capacity += ALLOC_STEP;
@@ -118,29 +120,26 @@ void lines_increment_count(struct lines_c* ln) {
 
 // updates the view component of editor, expects an updated curs component
 void editor_update_view(Editor* ed, GapBuffer* gap) {
-  while (ed->curs.y - ed->view.y > LINES - 1 - SCROLL_MARGIN) {
+  while (ed->curs.y - ed->view.y > LINES - 1 - SCROLL_MARGIN) { // down scrolling
     ed->view.offset = ed->lines.map[++ed->view.y];
-    ed->curs.y++;
   }
-  // while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) {
-  //   ed->view.offset = ed->lines.map[--ed->view.y];
-  //   ed->curs.y--;
-  // }
+  while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) { // upwards
+    ed->view.offset = ed->lines.map[--ed->view.y];
+  }
 }
 
-// renders the gap buffer as desired, expect an updated view component
+// renders text on screen. expects updated lines, cursor and view
 void editor_draw(Editor* ed, GapBuffer* gap) {
-  u32* ln_map = ed->lines.map;
   erase();
-  for (u32 ln = 0; ln < LINES  && ln < ed->lines.count; ln++) {
+  for (u32 ln = 0; ln < LINES  && ln + ed->view.y < ed->lines.count; ln++) {
     u32 lnend = editor_lnend(ed, gap, ln + ed->view.y);
     if (lnend != LN_EMPTY) {
-      for (u32 i = ln_map[ln + ed->view.y]; i <= lnend; i++) {
+      for (u32 i = ed->lines.map[ln + ed->view.y]; i <= lnend; i++) {
         addch(gap_getch(gap, i));
       }
     }
   }
-  move(ed->curs.y - ed->view.y, gap->c - ln_map[ed->curs.y]);
+  move(ed->curs.y - ed->view.y, gap->c - ed->lines.map[ed->curs.y]);
 }
 
 // to handle implicit editor modifiers like preserving cursx position
@@ -153,9 +152,17 @@ void editor_handle_implicit_mods(Editor* ed, u32 ch) {
   editor_reset_mods(ed, _lock_cursx);
 }
 
-static inline void editor_increment_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]++; }
-static inline void editor_decrement_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--; }
+// increments all positions after the line where cursor is. expects a non updated cursor
+static inline void editor_increment_next_lines(Editor* ed) {
+  for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]++;
+}
 
+// decrements all positions after the line where cursor is. expects a non updated cursor
+static inline void editor_decrement_next_lines(Editor* ed) {
+  for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--;
+}
+
+// makes a new line entry in the lines.map at curs.y + 1 position. expect a non updated cursor component.
 void editor_add_nl(Editor* ed, u32 logical_pos) {
   lines_increment_count(&ed->lines);
   for (lc_t i = ed->lines.count - 1; i > ed->curs.y + 1; i--) {
@@ -165,6 +172,7 @@ void editor_add_nl(Editor* ed, u32 logical_pos) {
   ed->lines.map[ed->curs.y + 1] = logical_pos; // new position is inserted there
 }
 
+// remove a line entry from lines.map. expect non updated cursor in editor.
 void editor_remove_nl(Editor* ed) {
   for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) {
     ed->lines.map[i - 1] = ed->lines.map[i];
@@ -172,6 +180,7 @@ void editor_remove_nl(Editor* ed) {
   ed->lines.count--;
 }
 
+// inserts ch into gap buffer, updates cursor and lines.map.
 void editor_insertch(Editor* ed, GapBuffer* gap, u32 ch) {
   gap_insertch(gap, ch);
   editor_increment_next_lines(ed);
@@ -182,6 +191,7 @@ void editor_insertch(Editor* ed, GapBuffer* gap, u32 ch) {
   editor_update_cursx(ed, gap->c - ed->lines.map[ed->curs.y]);
 }
 
+// removes a character from gap buffer, updates it on cursor and lines.map
 void editor_removech(Editor* ed, GapBuffer* gap) {
   u8 removing_ch = gap_getch(gap, gap->c - 1);
   if (!removing_ch) return;
@@ -194,6 +204,7 @@ void editor_removech(Editor* ed, GapBuffer* gap) {
   editor_update_cursx(ed, gap->c - ed->lines.map[ed->curs.y]);
 }
 
+// handler for left cursor movement.
 void editor_curs_mov_left(Editor* ed, GapBuffer* gap) {
   if (gap->c > 0) {
     u8 prev_ch = gap->start[gap->c - 1];
@@ -205,6 +216,7 @@ void editor_curs_mov_left(Editor* ed, GapBuffer* gap) {
   }
 }
 
+// handler for cursor movement towards right
 void editor_curs_mov_right(Editor* ed, GapBuffer* gap) {
   u8 next_ch = gap_getch(gap, gap->c);
   if (next_ch != 0) {
