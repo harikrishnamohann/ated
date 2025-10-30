@@ -3,8 +3,9 @@
 // realloc step for lines.map table
 #define ALLOC_STEP 1024
 
-// find min value
+// find min and max value
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
 
 // to find the center of offseted length
 #define CENTER(length, offset) ((((length) - (offset)) / 2))

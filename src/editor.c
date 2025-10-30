@@ -106,8 +106,8 @@ static void _increment_lc(struct lines_c* ln) {
 }
 
 // updates the view component of editor, expects an updated curs component
-static void _update_view(Editor* ed, GapBuffer* gap, u16 wheight) {
-  while (ed->curs.y - ed->view.y > wheight - SCROLL_MARGIN - 1) { // down scrolling
+static void _update_view(Editor* ed, GapBuffer* gap, u16 win_h, u16 win_w) {
+  while (ed->curs.y - ed->view.y > win_h - SCROLL_MARGIN - 1) { // down scrolling
     ed->view.offset = ed->lines.map[++ed->view.y];
   }
   while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) { // upwards
@@ -245,29 +245,30 @@ void editor_curs_mov_down(Editor* ed, GapBuffer* gap, u16 steps) {
 
 // renders text on screen. expects updated lines, cursor and view
 void editor_draw(WINDOW* edwin, Editor* ed, GapBuffer* gap) {
-  u16 wheight, wwidth;
-  getmaxyx(edwin, wheight, wwidth);
+  u16 win_h, win_w;
+  getmaxyx(edwin, win_h, win_w);
 
-  _update_view(ed, gap, wheight);
+  _update_view(ed, gap, win_h, win_w);
 
   werase(edwin);
-  mvwvline(edwin, 0, 0, ACS_VLINE, wheight);
+  mvwvline(edwin, 0, 0, ACS_VLINE, win_h);
+  mvwvline(edwin, 0, win_w - 1, ACS_VLINE, win_h);
   mvwprintw(edwin, 0, 1, "%5d ", ed->view.y + 1);
 
-  for (u32 ln = 0; ln < wheight  && ln + ed->view.y < ed->lines.count; ln++) {
+  for (u32 ln = 0; ln < win_h  && ln + ed->view.y < ed->lines.count; ln++) {
     u32 lnend = _lnend(ed, gap, ln + ed->view.y);
     if (lnend != LN_EMPTY) {
       mvwprintw(edwin, ln, 1, "%5d ", ln + ed->view.y + 1);
 
-      for (u16 x = 0; x + _viewpos(ed, ln) <= lnend && x + LNO_PADDING < wwidth; x++) {
+      for (u16 x = 0; x + _viewpos(ed, ln) <= lnend && x + LNO_PADDING < win_w - 1; x++) {
         u8 ch = gap_getch(gap, x + _viewpos(ed, ln));
-        if (ch) mvwaddch(edwin, ln, x + LNO_PADDING, ch);
+        if (ch && ch != '\n') mvwaddch(edwin, ln, x + LNO_PADDING, ch);
       }
 
       mvwprintw(edwin, ln + 1, 1, "%5d ", ln + ed->view.y + 2);
     }
   }
-  wmove(edwin, ed->curs.y - ed->view.y, gap->c - _curspos(ed, 0) + LNO_PADDING);
+  wmove(edwin, ed->curs.y - ed->view.y, MIN(win_w - 1 ,gap->c - _curspos(ed, 0) + LNO_PADDING));
 }
 
 // editor loop
