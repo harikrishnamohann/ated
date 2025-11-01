@@ -80,27 +80,25 @@ void gap_insertch(GapBuffer* gap, u8 ch) {
 }
 
 // remove operation
-void gap_removech(GapBuffer* gap) {
-  if (gap->c > 0) {
-    gap->c--;
-  }
-}
+void gap_removech(GapBuffer* gap) { if (gap->c > 0) gap->c--; }
 
 // moves the gap max `n_ch` times to the left
-void gap_left(GapBuffer* gap) {
-  if (gap->c > 0) {
+void gap_left(GapBuffer* gap, u32 times) {
+  while (times > 0 && gap->c > 0) {
     *(gap->start + gap->ce) = *(gap->start + gap->c - 1);
     gap->ce--;
     gap->c--;
+    times--;
   }
 }
 
 // moves the gap max `n_ch` times to the right
-void gap_right(GapBuffer* gap) {
-  if (gap->ce < gap->end) {
+void gap_right(GapBuffer* gap, u32 times) {
+  while (times > 0 && gap->ce < gap->end) {
     *(gap->start + gap->c) = *(gap->start + gap->ce + 1);
     gap->ce++;
     gap->c++;
+    times--;
   }
 }
 
