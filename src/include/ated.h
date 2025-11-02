@@ -12,6 +12,9 @@
 // to make ctrl + ; key maps more readable
 #define CTRL(x) ((x) & 0x1F)
 
+// to convert kilo-bytes and mega-bytes to bytes
+#define KB(n) ((n) * 1024ULL)
+#define MB(n) ((n) * 1024ULL * 1024ULL)
 /*
 ################################
 ## About measuring delta time ##

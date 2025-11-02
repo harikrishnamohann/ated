@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "include/itypes.h"
-#include "include/arena.c"
 
 #ifndef GAP_RESIZE_STEP
 #define GAP_RESIZE_STEP 1024
@@ -34,9 +33,9 @@ typedef struct {
 #define GAPBUF_GET_LOGICAL_INDEX(gap, buffer_index) (((buffer_index) > gap->ce) ? (buffer_index) + gap->c - gap->ce - 1 : (buffer_index))
 
 // initialize gap buffer of capacity = size
-GapBuffer gap_init(Arena* arena, u32 size) {
+GapBuffer gap_init(u32 size) {
   GapBuffer gap = {0};
-  gap.start = arena_alloc(arena, sizeof(u8) * size);
+  gap.start = malloc(sizeof(u8) * size);
   if (!gap.start) {
     perror("failed to initialize gap buffer.");
     exit(-1);
@@ -48,17 +47,17 @@ GapBuffer gap_init(Arena* arena, u32 size) {
 }
 
 // frees gap buffer
-void gap_free(Arena* arena, GapBuffer* gap) {
-  arena_drop(arena, gap->start);
+void gap_free(GapBuffer* gap) {
+  free(gap->start);
   gap->start = NULL;
   gap->end = gap->c = gap->ce = gap->capacity = 0;
 }
 
 // grow operation of gap buffer
-void gap_grow(Arena* arena, GapBuffer* gap) {
+void gap_grow(GapBuffer* gap) {
   isize ce_offset = gap->end - gap->ce;
   gap->capacity += GAP_RESIZE_STEP;
-  gap->start = arena_realloc(arena, gap->start, gap->capacity);
+  gap->start = realloc(gap->start, gap->capacity);
   if (!gap->start) {
     perror("realloc failure");
     exit(-1);
@@ -74,9 +73,9 @@ void gap_grow(Arena* arena, GapBuffer* gap) {
 }
 
 // insert operation of gap buffer.
-void gap_insertch(Arena* arena, GapBuffer* gap, u8 ch) {
+void gap_insertch(GapBuffer* gap, u8 ch) {
   if (gap->c >= gap->ce) {
-    gap_grow(arena, gap);
+    gap_grow(gap);
   }
   *(gap->start + gap->c) = ch;
   gap->c++;

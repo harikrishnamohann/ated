@@ -1,16 +1,13 @@
 #include <ncurses.h>
 #include <stdbool.h>
-// #include <time.h>
 #include "include/ated.h"
 #include "include/itypes.h"
-#include "include/arena.c"
 
 #define GAP_RESIZE_STEP KB(4)
 #include "gap_buffer.c"
 
 // lc_t will specify the maximum number of lines possible.
 #define lc_t u16
-#define EDITOR_INIT_CAPACITY KB(256)
 
 #define SCROLL_MARGIN 3
 #define LNO_PADDING 8
@@ -48,7 +45,6 @@ enum {
 typedef struct {
   u16 mods; // stores all modifiers used in the editor.
   // states should only be modified through the designated methods.
-  Arena* arena;
   struct cursor_c curs;
   struct view_c view;
   struct lines_c lines;
@@ -83,7 +79,7 @@ static void increment_lc(Editor* ed) {
   struct lines_c* ln = &ed->lines;
   if (ln->count >= ln->capacity) {
     ln->capacity += KB(1);
-    ln->map = arena_realloc(ed->arena, ln->map, sizeof(u32) * ln->capacity);
+    ln->map = realloc(ln->map, sizeof(u32) * ln->capacity);
     if (!ln->map) {
       perror("failed to do realloc for lines.map");
       exit(-1);
@@ -141,10 +137,9 @@ static void remove_newline(Editor* ed) {
 
 Editor editor_init() {
   Editor ed = {0};
-  ed.arena = arena_init(EDITOR_INIT_CAPACITY);
   ed.lines.capacity = KB(1);
   ed.lines.count = 1;
-  ed.lines.map = (u32*)arena_alloc(ed.arena, sizeof(u32) * ed.lines.capacity);
+  ed.lines.map = (u32*)malloc(sizeof(u32) * ed.lines.capacity);
   if (!ed.lines.map) {
     perror("failed to do malloc for lines.map");
     exit(-1);
@@ -154,12 +149,12 @@ Editor editor_init() {
 }
 
 void editor_free(Editor* ed) {
-  arena_free(ed->arena);
+  free(ed->lines.map);
   memset(ed, 0, sizeof(Editor));
 }
 
 void editor_insertch(Editor* ed, GapBuffer* gap, u32 ch) {
-  gap_insertch(ed->arena, gap, ch);
+  gap_insertch(gap, ch);
   increment_next_lines(ed);
   if (ch == '\n') {
     add_newline(ed, gap->c);
@@ -252,7 +247,7 @@ void editor_draw(WINDOW* edwin, Editor* ed, GapBuffer* gap) {
 }
 
 void editor_process(Editor* ed, WINDOW* edwin) {
-  GapBuffer gap = gap_init(ed->arena, GAP_RESIZE_STEP);
+  GapBuffer gap = gap_init(GAP_RESIZE_STEP);
 
   u32 ch;
   editor_draw(edwin, ed, &gap);
@@ -278,7 +273,7 @@ void editor_process(Editor* ed, WINDOW* edwin) {
     wrefresh(edwin);
   }
   
-  gap_free(ed->arena, &gap);
+  gap_free(&gap);
 }
 
 #undef lc_t
