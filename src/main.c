@@ -1,11 +1,11 @@
 #include <stdbool.h>
 #include <ncurses.h>
 #include "include/ated.h"
-#include "include/rust_itypes.h"
+#include "include/itypes.h"
 #include "editor.c"
 
 i32 main() {
-  Editor ed = editor_init(ALLOC_STEP);
+  Editor ed = editor_init();
 
   initscr();
   noecho();

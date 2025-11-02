@@ -1,15 +1,19 @@
 #include <ncurses.h>
 #include <stdbool.h>
-#include <time.h>
-#include "gap_buffer.c"
+// #include <time.h>
 #include "include/ated.h"
-#include "include/rust_itypes.h"
+#include "include/itypes.h"
+#include "include/arena.c"
+
+#define GAP_RESIZE_STEP KB(4)
+#include "gap_buffer.c"
 
 // lc_t will specify the maximum number of lines possible.
 #define lc_t u16
+#define EDITOR_INIT_CAPACITY KB(256)
+
 #define SCROLL_MARGIN 3
 #define LNO_PADDING 8
-#define TRACE_STOP_DELAY 1.01
 
 // An "_c" in the following struct names can be abbreviated as _component.
  
@@ -41,28 +45,13 @@ enum {
   removech = -1,
 };
 
-struct snap {
-  i8 op;
-  u32 curs_pos;
-  u8 *frame;
-  struct snap* nxt;
-};
-
-// for undo-redo
-// todo
-struct snaps_c {
-  struct timespec last_written;
-  struct snap* undo;
-  struct snap* redo;
-};
-
 typedef struct {
   u16 mods; // stores all modifiers used in the editor.
   // states should only be modified through the designated methods.
+  Arena* arena;
   struct cursor_c curs;
   struct view_c view;
   struct lines_c lines;
-  struct snaps_c snaps;
 } Editor;
 
 enum editor_modifiers {
@@ -90,10 +79,11 @@ static u32 lnend(Editor* ed, GapBuffer* gap, lc_t lno) {
   return i;
 }
 
-static void increment_lc(struct lines_c* ln) {
+static void increment_lc(Editor* ed) {
+  struct lines_c* ln = &ed->lines;
   if (ln->count >= ln->capacity) {
-    ln->capacity += ALLOC_STEP;
-    ln->map = realloc(ln->map, sizeof(u32) * ln->capacity);
+    ln->capacity += KB(1);
+    ln->map = arena_realloc(ed->arena, ln->map, sizeof(u32) * ln->capacity);
     if (!ln->map) {
       perror("failed to do realloc for lines.map");
       exit(-1);
@@ -134,7 +124,7 @@ static inline void increment_next_lines(Editor* ed) { for (lc_t i = ed->curs.y +
 static inline void decrement_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--; }
 
 static void add_newline(Editor* ed, u32 logical_pos) {
-  increment_lc(&ed->lines);
+  increment_lc(ed);
   for (lc_t i = ed->lines.count - 1; i > ed->curs.y + 1; i--) {
     ed->lines.map[i] = ed->lines.map[i - 1]; // shifting right from curs_lno + 1 pos
   }
@@ -149,26 +139,27 @@ static void remove_newline(Editor* ed) {
   ed->lines.count--;
 }
 
-Editor editor_init(lc_t lc) {
+Editor editor_init() {
   Editor ed = {0};
-  ed.lines.capacity = lc;
+  ed.arena = arena_init(EDITOR_INIT_CAPACITY);
+  ed.lines.capacity = KB(1);
   ed.lines.count = 1;
-  ed.lines.map = (u32*)malloc(sizeof(u32) * lc);
+  ed.lines.map = (u32*)arena_alloc(ed.arena, sizeof(u32) * ed.lines.capacity);
   if (!ed.lines.map) {
     perror("failed to do malloc for lines.map");
     exit(-1);
   }
-  memset(ed.lines.map, 0, sizeof(u32) * lc);
+  memset(ed.lines.map, 0, sizeof(u32) * ed.lines.capacity);
   return ed;
 }
 
 void editor_free(Editor* ed) {
-  free(ed->lines.map);
+  arena_free(ed->arena);
   memset(ed, 0, sizeof(Editor));
 }
 
 void editor_insertch(Editor* ed, GapBuffer* gap, u32 ch) {
-  gap_insertch(gap, ch);
+  gap_insertch(ed->arena, gap, ch);
   increment_next_lines(ed);
   if (ch == '\n') {
     add_newline(ed, gap->c);
@@ -261,23 +252,16 @@ void editor_draw(WINDOW* edwin, Editor* ed, GapBuffer* gap) {
 }
 
 void editor_process(Editor* ed, WINDOW* edwin) {
-  GapBuffer gap = gap_init(ALLOC_STEP);
-  struct timespec prev_time, curr_time;
+  GapBuffer gap = gap_init(ed->arena, GAP_RESIZE_STEP);
 
   u32 ch;
   editor_draw(edwin, ed, &gap);
   wrefresh(edwin);
-  clock_gettime(CLOCK_MONOTONIC, &prev_time);
   while ((ch = wgetch(edwin)) != CTRL('q')) {
     if (ch != ERR) {
       handle_implicit_mods(ed, ch);
       if (ch >= 32 && ch < 127) { // printable characters
-        clock_gettime(CLOCK_MONOTONIC, &curr_time);
-        if (delta_time(&curr_time, &prev_time) > TRACE_STOP_DELAY) {
-          editor_insertch(ed, &gap, 'X');
-        }
         editor_insertch(ed, &gap, ch);
-        prev_time = curr_time;
       } else {
         switch (ch) {
           case KEY_LEFT: editor_curs_mov_left(ed, &gap); break;
@@ -294,7 +278,7 @@ void editor_process(Editor* ed, WINDOW* edwin) {
     wrefresh(edwin);
   }
   
-  gap_free(&gap);
+  gap_free(ed->arena, &gap);
 }
 
 #undef lc_t
