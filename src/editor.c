@@ -1,3 +1,4 @@
+#include <time.h>
 #include <ncurses.h>
 #include <stdbool.h>
 #include "include/ated.h"
@@ -11,6 +12,7 @@
 
 #define SCROLL_MARGIN 3
 #define LNO_PADDING 8
+#define MAX_SNAPS 1000
 
 // An "_c" in the following struct names can be abbreviated as _component.
  
@@ -19,9 +21,9 @@
 // array index is line number, and its content is start position of line
 // inside the buffer.
 struct lines_c { 
-  u32 *map; // lines lookup table
-  lc_t count; // total number of lines
-  lc_t capacity; // capacity of *map
+  u32 *map; // lines lookup table; need mem reallocation
+  lc_t count;
+  lc_t capacity;
 };
 
 struct cursor_c { 
@@ -29,13 +31,30 @@ struct cursor_c {
   u16 y;
 }; 
 
-// view component marks the begin position of text drawing, as well
-// as it makes scrolling possible.
+// view component marks the begin position of text drawing, as well as it makes scrolling possible.
 struct view_c {
-  u32 offset; // logical index of buffer where the view should begin
+  u32 offset; 
   u32 x;
   lc_t y;
 };
+
+struct snap {
+  i8 op;
+  u32 curs;
+  u32 len;
+  u8 *frame;
+};
+
+struct snapshots_c {
+  struct timespec last_written;
+  struct snap undo[MAX_SNAPS];
+  struct snap redo[MAX_SNAPS];
+  i16 utop; // empty => -1
+  i16 rtop;
+  bool is_full; // utop and rtop treats undo and redo as circular array if this is set
+};
+
+// NOTE: undo->undo->redo->modify => erase redo
 
 enum {
   insertch = 1,
@@ -48,10 +67,11 @@ typedef struct {
   struct cursor_c curs;
   struct view_c view;
   struct lines_c lines;
+  struct snapshots_c snaps; // for undo-redo
 } Editor;
 
 enum editor_modifiers {
-  lock_cursx = 0x8000, // prevent writing to editor.curs.x; method: editor_update_cursx()
+  lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
 };
 
 static inline void set_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods | new_mods; }
@@ -145,6 +165,9 @@ Editor editor_init() {
     exit(-1);
   }
   memset(ed.lines.map, 0, sizeof(u32) * ed.lines.capacity);
+  ed.snaps.utop = ed.snaps.rtop = -1;
+  ed.snaps.is_full = false;
+  clock_gettime(CLOCK_MONOTONIC, &ed.snaps.last_written);
   return ed;
 }
 
@@ -289,4 +312,5 @@ TODO
  - make Editor window attachable [v]
  - handle horizontal text overflows [v]
  - make a header file and compile this separately once i am done with this[_]
+ - undo-redo [_]
 */

@@ -4,6 +4,12 @@
 #include <malloc.h>
 #include "itypes.h"
 
+#ifndef _BYTE_CONVERSION_
+#define _BYTE_CONVERSION_
+#define KB(n) ((n) * 1024ULL)
+#define MB(n) ((n) * 1024ULL * 1024ULL)
+#endif
+
 typedef struct _arena {
   usize capacity;
   usize occupied;

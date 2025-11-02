@@ -13,8 +13,11 @@
 #define CTRL(x) ((x) & 0x1F)
 
 // to convert kilo-bytes and mega-bytes to bytes
+#ifndef _BYTE_CONVERSION_
+#define _BYTE_CONVERSION_
 #define KB(n) ((n) * 1024ULL)
 #define MB(n) ((n) * 1024ULL * 1024ULL)
+#endif
 /*
 ################################
 ## About measuring delta time ##
