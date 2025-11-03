@@ -5,8 +5,6 @@
 #include "editor.c"
 
 i32 main() {
-  Editor ed = editor_init();
-
   initscr();
   noecho();
   curs_set(1);
@@ -18,10 +16,9 @@ i32 main() {
   WINDOW* edwin = newwin(H, W, CENTER(LINES, H), CENTER(COLS, W));
   keypad(edwin, TRUE);
 
-  editor_process(&ed, edwin);
+  editor_process(edwin);
 
   delwin(edwin);
   endwin();
-  editor_free(&ed);
   return 0;
 }
