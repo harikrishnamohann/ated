@@ -38,19 +38,12 @@ struct lines_c {
   lc_t capacity;
 };
 
-struct cursor_c { 
-  u16 x;
-  u16 y;
+struct point { 
+  u32 x;
+  u32 y;
 }; 
 
-struct view_c {
-  u32 offset; 
-  u32 x;
-  lc_t y;
-};
-
 struct snap { i8 op; u32 curs; u32 len; u8 *frame; };
-
 struct snapshots_c {
   struct timespec last_written;
   struct snap undo[MAX_SNAPS];
@@ -76,83 +69,17 @@ typedef struct {
   u16 mods; // stores all modifiers used in the editor.
   // states should only be modified through the designated methods.
   GapBuffer gap;
-  struct cursor_c curs;
-  struct view_c view;
+  struct point curs;
+  struct point view;
   struct lines_c lines;
   struct snapshots_c snaps; // for undo-redo
 } Editor;
 
 
-// @MODIFIER
-static void handle_implicit_mods(Editor* ed, u32 ch);
-static inline void set_mods(Editor* ed, u16 new_mods);
-static inline void reset_mods(Editor* ed, u16 new_mods);
-
-// @LINES
-u32 static inline lnstart(Editor* ed, lc_t lno);
-u32 static inline viewln(Editor* ed, lc_t ln_offset);
-u32 static inline cursln(Editor* ed, lc_t ln_offset);
-u32 static lnend(Editor* ed, lc_t lno);
-
-// @VIEW
-static void update_view(Editor* ed, u16 win_h, u16 win_w);
-
-// @CURS
-static inline void update_cursx(Editor* ed, u16 pos);
-static void curs_mov_left(Editor* ed);
-static void curs_mov_right(Editor* ed);
-static void curs_mov_up(Editor* ed, u16 times);
-static void curs_mov_down(Editor* ed, u16 times);
-
-// @LINES
-static inline void increment_next_lines(Editor* ed);
-static inline void decrement_next_lines(Editor* ed);
-static void increment_lc(Editor* ed);
-static void add_newline(Editor* ed, u32 logical_pos);
-static void remove_newline(Editor* ed);
-
-// @EDITOR
-static Editor* editor_init();
-static void editor_free(Editor** ed);
-static void editor_insertch(Editor* ed, u32 ch);
-static void editor_removech(Editor* ed);
-static void editor_draw(WINDOW* edwin, Editor* ed);
-
-
-// @ENTRY_POINT
-void editor_process(WINDOW* edwin) {
-  Editor *ed = editor_init();
-
-  u32 ch;
-  editor_draw(edwin, ed);
-  wrefresh(edwin);
-  while ((ch = wgetch(edwin)) != CTRL('q')) {
-    if (ch != ERR) {
-      handle_implicit_mods(ed, ch);
-      if (ch >= 32 && ch < 127) { // printable characters
-        editor_insertch(ed, ch);
-      } else {
-        switch (ch) {
-          case KEY_LEFT: curs_mov_left(ed); break;
-          case KEY_RIGHT: curs_mov_right(ed); break;
-          case KEY_UP: curs_mov_up(ed, 1); break;
-          case KEY_DOWN: curs_mov_down(ed, 1); break;
-          case KEY_BACKSPACE: editor_removech(ed);
-            break;
-          case KEY_ENTER: case '\n': editor_insertch(ed, '\n'); break;
-        }
-      }
-      editor_draw(edwin, ed);
-    }
-    wrefresh(edwin);
-  }
-  
-  editor_free(&ed);
-}
-
-
+/** @MODIFIER **/
 static inline void set_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods | new_mods; }
 static inline void reset_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods & ( new_mods ^ _mask); }
+static inline bool has_mods(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
 
 static void handle_implicit_mods(Editor* ed, u32 ch) {
   switch (ch) {
@@ -162,8 +89,8 @@ static void handle_implicit_mods(Editor* ed, u32 ch) {
   reset_mods(ed, lock_cursx);
 }
 
-static inline bool has_mods(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
 
+/** @LINES **/
 // the following functions return logical indices from lines.map.
 u32 static inline lnstart(Editor* ed, lc_t lno) { return ed->lines.map[lno]; }
 u32 static inline viewln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->view.y]; }
@@ -178,24 +105,6 @@ static u32 lnend(Editor* ed, lc_t lno) {
   if (i >= len) return LN_EMPTY;
   while (i < len - 1 && gap_getch(&ed->gap, i) != '\n') i++;
   return i;
-}
-
-// curs_c must be updated before calling this method
-static void update_view(Editor* ed, u16 win_h, u16 win_w) {
-  while (ed->curs.y - ed->view.y > win_h - SCROLL_MARGIN - 1) { // down scrolling
-    ed->view.offset = ed->lines.map[++ed->view.y];
-  }
-  while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) { // upwards
-    ed->view.offset = ed->lines.map[--ed->view.y];
-  }
-  u16 curs_len = lnend(ed, ed->curs.y) - cursln(ed, 0);
-  u16 curs_pos = ed->gap.c - cursln(ed, 0);
-  while (ed->view.x < curs_len && curs_pos - ed->view.x >= win_w - LNO_PADDING - SCROLL_MARGIN - 1) {
-    ed->view.x++;
-  }
-  while (ed->view.x > 0 && curs_pos <= ed->view.x + SCROLL_MARGIN) {
-    ed->view.x--;
-  }
 }
 
 // the following 4 operations expects curs_c before updation.
@@ -232,31 +141,19 @@ static void remove_newline(Editor* ed) {
   ed->lines.count--;
 }
 
-static Editor* editor_init() {
-  Editor* ed = malloc(sizeof(Editor));
-  memset(ed, 0, sizeof(Editor));
-  ed->gap = gap_init(GAP_RESIZE_STEP);
-  ed->lines.capacity = KB(1);
-  ed->lines.count = 1;
-  ed->lines.map = (u32*)malloc(sizeof(u32) * ed->lines.capacity);
-  if (!ed->lines.map) {
-    perror("failed to do malloc for lines.map");
-    exit(-1);
-  }
-  memset(ed->lines.map, 0, sizeof(u32) * ed->lines.capacity);
-  ed->snaps.utop = ed->snaps.rtop = -1;
-  ed->snaps.is_full = false;
-  clock_gettime(CLOCK_MONOTONIC, &ed->snaps.last_written);
-  return ed;
+
+/** @VIEW **/
+// curs_c must be updated before calling this method
+static void update_view(Editor* ed, u16 win_h, u16 win_w) {
+  while (ed->curs.y - ed->view.y > win_h - SCROLL_MARGIN - 1) ed->view.y++; // downwards
+  while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) ed->view.y--; // upwards
+  u16 curs_len = lnend(ed, ed->curs.y) - cursln(ed, 0);
+  u16 curs_pos = ed->gap.c - cursln(ed, 0);
+  while (ed->view.x < curs_len && curs_pos - ed->view.x >= win_w - LNO_PADDING - SCROLL_MARGIN - 1) ed->view.x++; // rightwards
+  while (ed->view.x > 0 && curs_pos <= ed->view.x + SCROLL_MARGIN) ed->view.x--; // leftwards
 }
 
-static void editor_free(Editor** ed) {
-  free((*ed)->lines.map);
-  gap_free(&(*ed)->gap);
-  free(*ed);
-  *ed = NULL;
-}
-
+/** @CURS **/
 static inline void update_cursx(Editor* ed, u16 pos) { if (!has_mods(ed, lock_cursx)) ed->curs.x = pos; }
 
 static void curs_mov_left(Editor* ed) {
@@ -302,6 +199,36 @@ static void curs_mov_down(Editor* ed, u16 times) {
   u32 target_pos = lnstart(ed, target_lno) + MIN(ed->curs.x, target_len);
   gap_right(&ed->gap, target_pos - ed->gap.c);
   ed->curs.y += times;
+}
+
+/** @SNAPSHOTS **/
+
+
+
+/** @EDITOR **/
+static Editor* editor_init() {
+  Editor* ed = malloc(sizeof(Editor));
+  memset(ed, 0, sizeof(Editor));
+  ed->gap = gap_init(GAP_RESIZE_STEP);
+  ed->lines.capacity = KB(1);
+  ed->lines.count = 1;
+  ed->lines.map = (u32*)malloc(sizeof(u32) * ed->lines.capacity);
+  if (!ed->lines.map) {
+    perror("failed to do malloc for lines.map");
+    exit(-1);
+  }
+  memset(ed->lines.map, 0, sizeof(u32) * ed->lines.capacity);
+  ed->snaps.utop = ed->snaps.rtop = -1;
+  ed->snaps.is_full = false;
+  clock_gettime(CLOCK_MONOTONIC, &ed->snaps.last_written);
+  return ed;
+}
+
+static void editor_free(Editor** ed) {
+  free((*ed)->lines.map);
+  gap_free(&(*ed)->gap);
+  free(*ed);
+  *ed = NULL;
 }
 
 static void editor_insertch(Editor* ed, u32 ch) {
@@ -351,6 +278,39 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     mvwprintw(edwin, ln + 1, 1, "%5d ", ln + ed->view.y + 2);
   }
   wmove(edwin, ed->curs.y - ed->view.y, MIN(win_w - 1 ,ed->gap.c - cursln(ed, 0) + LNO_PADDING - ed->view.x));
+}
+
+
+/** @ENTRY_POINT **/
+void editor_process(WINDOW* edwin) {
+  Editor *ed = editor_init();
+  keypad(edwin, TRUE);
+
+  u32 ch;
+  editor_draw(edwin, ed);
+  wrefresh(edwin);
+  while ((ch = wgetch(edwin)) != CTRL('q')) {
+    if (ch != ERR) {
+      handle_implicit_mods(ed, ch);
+      if (ch >= 32 && ch < 127) { // printable characters
+        editor_insertch(ed, ch);
+      } else {
+        switch (ch) {
+          case KEY_LEFT: curs_mov_left(ed); break;
+          case KEY_RIGHT: curs_mov_right(ed); break;
+          case KEY_UP: curs_mov_up(ed, 1); break;
+          case KEY_DOWN: curs_mov_down(ed, 1); break;
+          case KEY_BACKSPACE: editor_removech(ed);
+            break;
+          case KEY_ENTER: case '\n': editor_insertch(ed, '\n'); break;
+        }
+      }
+      editor_draw(edwin, ed);
+    }
+    wrefresh(edwin);
+  }
+
+  editor_free(&ed);
 }
 
 #undef lc_t

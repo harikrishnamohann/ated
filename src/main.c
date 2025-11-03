@@ -14,7 +14,6 @@ i32 main() {
   #define H 20
   #define W 50
   WINDOW* edwin = newwin(H, W, CENTER(LINES, H), CENTER(COLS, W));
-  keypad(edwin, TRUE);
 
   editor_process(edwin);
 
