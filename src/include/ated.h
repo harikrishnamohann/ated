@@ -18,6 +18,10 @@
 #define KB(n) ((n) * 1024ULL)
 #define MB(n) ((n) * 1024ULL * 1024ULL)
 #endif
+
+#ifndef ABS
+#define ABS(n) (n < 0 ? (n * -1) : (n))
+#endif
 /*
 ################################
 ## About measuring delta time ##

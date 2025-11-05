@@ -10,6 +10,7 @@ TODO
  - undo-redo [_]
 */
 
+#include <assert.h>
 #include <time.h>
 #include <ncurses.h>
 #include <stdbool.h>
@@ -43,26 +44,36 @@ struct point {
   u32 y;
 }; 
 
-struct snap { i8 op; u32 curs; u32 len; u8 *frame; };
+struct snap { i8 op; u32 start; u32 len; u8 *frame; };
+
+enum undo_redo_operations {
+  insertch = 1,
+  removech = -1,
+};
+
+// todo
+// implement dynamic array using a meta program or macros
+#define CREATE_DYNAMIC_ARRAY(TYPE) typedef struct { TYPE* arr; usize len; } TYPE##Array;
+
+CREATE_DYNAMIC_ARRAY(u32);
+
+
 struct snapshots_c {
-  struct timespec last_written;
+  struct {
+    u32Array content;
+    u32 start; // start index
+  } record;
   struct snap undo[MAX_SNAPS];
   struct snap redo[MAX_SNAPS];
-  i16 utop; // empty => -1
-  i16 rtop;
+  u16 utop;
+  u16 rtop;
   bool is_full; // utop and rtop treats undo and redo as circular array if this is set
 };
 
 // NOTE: undo->undo->redo->modify => erase redo
-
 enum editor_modifiers {
   lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
   _mask = 0xffff,
-};
-
-enum undo_redo_operations {
-  insertch = 1,
-  lremovech = -1,
 };
 
 typedef struct {
@@ -77,24 +88,24 @@ typedef struct {
 
 
 /** @MODIFIER **/
-static inline void set_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods | new_mods; }
-static inline void reset_mods(Editor* ed, u16 new_mods) { ed->mods = ed->mods & ( new_mods ^ _mask); }
-static inline bool has_mods(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
+static inline void mods_set(Editor* ed, u16 new_mods) { ed->mods = ed->mods | new_mods; }
+static inline void mods_reset(Editor* ed, u16 new_mods) { ed->mods = ed->mods & ( new_mods ^ _mask); }
+static inline bool mods_has(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
 
 static void handle_implicit_mods(Editor* ed, u32 ch) {
   switch (ch) {
     case KEY_UP:
-    case KEY_DOWN: set_mods(ed, lock_cursx); return;
+    case KEY_DOWN: mods_set(ed, lock_cursx); return;
   }
-  reset_mods(ed, lock_cursx);
+  mods_reset(ed, lock_cursx);
 }
 
 
 /** @LINES **/
 // the following functions return logical indices from lines.map.
-u32 static inline lnstart(Editor* ed, lc_t lno) { return ed->lines.map[lno]; }
-u32 static inline viewln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->view.y]; }
-u32 static inline cursln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->curs.y]; }
+static inline u32 lnstart(Editor* ed, lc_t lno) { return ed->lines.map[lno]; }
+static inline u32 viewln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->view.y]; }
+static inline u32 cursln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->curs.y]; }
 
 #define LN_EMPTY U32_MAX
 // returns logical end position of given lno from line component of editor.
@@ -108,19 +119,15 @@ static u32 lnend(Editor* ed, lc_t lno) {
 }
 
 // the following 4 operations expects curs_c before updation.
-
-static inline void increment_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]++; }
-static inline void decrement_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--; }
+static inline void incmt_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]++; }
+static inline void decmt_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--; }
 
 static void increment_lc(Editor* ed) {
   struct lines_c* lines = &ed->lines;
   if (lines->count >= lines->capacity) {
     lines->capacity += KB(1);
     lines->map = realloc(lines->map, sizeof(u32) * lines->capacity);
-    if (!lines->map) {
-      perror("failed to do realloc for lines.map");
-      exit(-1);
-    }
+    assert(lines->map);
   }
   lines->count++;
 }
@@ -154,7 +161,7 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 }
 
 /** @CURS **/
-static inline void update_cursx(Editor* ed, u16 pos) { if (!has_mods(ed, lock_cursx)) ed->curs.x = pos; }
+static inline void update_cursx(Editor* ed, u16 pos) { if (!mods_has(ed, lock_cursx)) ed->curs.x = pos; }
 
 static void curs_mov_left(Editor* ed) {
   GapBuffer* gap = &ed->gap;
@@ -202,25 +209,50 @@ static void curs_mov_down(Editor* ed, u16 times) {
 }
 
 /** @SNAPSHOTS **/
+static struct snap snap_init(i8 op, u32 start, u32 len, GapBuffer* gap) {
+  u8* buf = malloc(sizeof(i8) * len);
+  assert(buf);
+  for (int i = 0; i < len; i++) {
+    buf[i] = gap_getch(gap, i + start);
+  }
+  return (struct snap) {
+    .op = op,
+    .start = start,  
+    .len = len,
+    .frame = buf,
+  };
+}
+
+static inline void snap_free(struct snap* snap) { free(snap->frame); memset(snap, 0, sizeof(struct snap)); }
+
+static inline void snapshot_capture(Editor* ed) { ed->snaps.record.start = ed->gap.c; }
+
+static void snaps_insert(Editor* ed) {
+  u32 start = ed->snaps.record.start; // assuming insert operation
+  i8 op = insertch;
+  i32 len = ed->gap.c - start;
+  if (len < 0) { // remove operation
+    op = removech;
+    start -= len - 1;
+  }
+
+}
 
 
 
 /** @EDITOR **/
 static Editor* editor_init() {
   Editor* ed = malloc(sizeof(Editor));
-  memset(ed, 0, sizeof(Editor));
+  assert(ed);
+  *ed = (Editor){0};
+
   ed->gap = gap_init(GAP_RESIZE_STEP);
+
   ed->lines.capacity = KB(1);
   ed->lines.count = 1;
   ed->lines.map = (u32*)malloc(sizeof(u32) * ed->lines.capacity);
-  if (!ed->lines.map) {
-    perror("failed to do malloc for lines.map");
-    exit(-1);
-  }
+  assert(ed->lines.map);
   memset(ed->lines.map, 0, sizeof(u32) * ed->lines.capacity);
-  ed->snaps.utop = ed->snaps.rtop = -1;
-  ed->snaps.is_full = false;
-  clock_gettime(CLOCK_MONOTONIC, &ed->snaps.last_written);
   return ed;
 }
 
@@ -233,7 +265,7 @@ static void editor_free(Editor** ed) {
 
 static void editor_insertch(Editor* ed, u32 ch) {
   gap_insertch(&ed->gap, ch);
-  increment_next_lines(ed);
+  incmt_next_lines(ed);
   if (ch == '\n') {
     add_newline(ed, ed->gap.c);
     ed->curs.y++;
@@ -244,7 +276,7 @@ static void editor_insertch(Editor* ed, u32 ch) {
 static void editor_removech(Editor* ed) {
   u8 removing_ch = gap_getch(&ed->gap, ed->gap.c - 1);
   if (!removing_ch) return;
-  decrement_next_lines(ed);
+  decmt_next_lines(ed);
   gap_removech(&ed->gap);
   if (removing_ch == '\n') {
     remove_newline(ed);
