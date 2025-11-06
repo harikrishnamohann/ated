@@ -56,6 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "err.h"
+#include "itypes.h"
 
 #if defined(GROWTH_FACTOR)
   #define __SET_REALLOC_SIZE(capacity) ((capacity) = (capacity) * GROWTH_FACTOR)
@@ -93,13 +94,19 @@ typedef struct __##PREFIX##Vec { \
 void __##PREFIX##Vec_grow(PREFIX##Vec* vec) {\
   __SET_REALLOC_SIZE(vec->_capacity);\
   vec->_elements = realloc(vec->_elements, sizeof(TYPE) * vec->_capacity);\
-  vec->error(err_malloc_failure);\
+  if (vec->_elements == NULL) {\
+    vec->error(err_malloc_failure);\
+    return;\
+  }\
 }
 
 #define __DEF_INSERT(TYPE, PREFIX) \
 void __##PREFIX##Vec_insert(PREFIX##Vec* vec, TYPE val, isize pos) { \
   usize i = pos < 0 ? vec->length + pos + 1 : pos; \
-  if (i > vec->length) vec->error(err_index_out_of_bounds); \
+  if (i > vec->length) {\
+    vec->error(err_index_out_of_bounds);\
+    return;\
+  }\
   if (vec->length >= vec->_capacity) __##PREFIX##Vec_grow(vec); \
   memmove(&vec->_elements[i + 1], &vec->_elements[i], sizeof(TYPE) * (vec->length - i)); \
   vec->_elements[i] = val; \
@@ -110,7 +117,10 @@ void __##PREFIX##Vec_insert(PREFIX##Vec* vec, TYPE val, isize pos) { \
 #define __DEF_REMOVE(TYPE, PREFIX) \
 TYPE __##PREFIX##Vec_remove(PREFIX##Vec* vec, isize pos) { \
   usize i = pos < 0 ? vec->length + pos: pos; \
-  if (i > vec->length) vec->error(err_index_out_of_bounds); \
+  if (i > vec->length) {\
+    vec->error(err_index_out_of_bounds);\
+    return (TYPE){0};\
+  }\
   TYPE val = vec->_elements[i]; \
   memmove(&vec->_elements[i], &vec->_elements[i + 1], sizeof(TYPE) * (vec->length - i - 1)); \
   vec->length--; \
@@ -120,14 +130,20 @@ TYPE __##PREFIX##Vec_remove(PREFIX##Vec* vec, isize pos) { \
 #define __DEF_GET(TYPE, PREFIX) \
 TYPE __##PREFIX##Vec_get(const PREFIX##Vec* vec, isize pos) { \
   usize i = pos < 0 ? vec->length + pos: pos; \
-  if (i > vec->length) vec->error(err_index_out_of_bounds); \
+  if (i > vec->length) {\
+    vec->error(err_index_out_of_bounds);\
+    return (TYPE){0};\
+  }\
   return vec->_elements[i]; \
 }
 
 #define __DEF_SET(TYPE, PREFIX) \
 void __##PREFIX##Vec_set(PREFIX##Vec* vec, TYPE val, isize pos) { \
   usize i = pos < 0 ? vec->length + pos: pos;\
-  if (i > vec->length) vec->error(err_index_out_of_bounds);\
+  if (i > vec->length) {\
+    vec->error(err_index_out_of_bounds);\
+    return;\
+  }\
   vec->_elements[i] = val;\
 }
 
@@ -150,7 +166,10 @@ PREFIX##Vec new_##PREFIX##Vec(usize capacity, err_handler_t func) {\
     .drop = __##PREFIX##Vec_free,\
   };\
   vec.error = (func) ? func : __default_err_handler;\
-  if (vec._elements == NULL) vec.error(err_malloc_failure);\
+  if (vec._elements == NULL) {\
+    vec.error(err_malloc_failure);\
+    exit(-1);\
+  }\
   return vec;\
 }
 
@@ -163,3 +182,4 @@ PREFIX##Vec new_##PREFIX##Vec(usize capacity, err_handler_t func) {\
   __DEF_SET(type, prefix) \
   __DEF_FREE(type, prefix) \
   __DEF_NEW(type, prefix)
+
