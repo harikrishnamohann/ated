@@ -1,7 +1,5 @@
 #pragma once
 
-#include "itypes.h"
-
 // find min and max value
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))

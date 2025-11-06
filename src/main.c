@@ -1,7 +1,7 @@
 #include <stdbool.h>
 #include <ncurses.h>
-#include "include/ated.h"
 #include "include/itypes.h"
+#include "include/utils.h"
 #include "editor.c"
 
 i32 main() {

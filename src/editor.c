@@ -11,10 +11,10 @@ TODO
 */
 
 #include <assert.h>
-#include <time.h>
+// #include <time.h>
 #include <ncurses.h>
 #include <stdbool.h>
-#include "include/ated.h"
+#include "include/utils.h"
 #include "include/itypes.h"
 
 #define GAP_RESIZE_STEP KB(4)
