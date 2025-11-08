@@ -11,7 +11,7 @@
 
 // [start]abcd[c]_______________[ce]efg[end]
 typedef struct {
-  u8* start;  // pointer to the start of buffer
+  u32* start;  // pointer to the start of buffer
   u32 end;  // offset to end of the buffer
   u32 c;  // offset to start of gap or cursor
   u32 ce;  // offset to end of gap
@@ -35,8 +35,8 @@ typedef struct {
 // initialize gap buffer of capacity = size
 GapBuffer gap_init(u32 size) {
   GapBuffer gap = {0};
-  gap.start = malloc(sizeof(u8) * size);
-  if (!gap.start) {
+  gap.start = malloc(sizeof(u32) * size);
+  if (gap.start == NULL) {
     perror("failed to initialize gap buffer.");
     exit(-1);
   }
@@ -73,7 +73,7 @@ void gap_grow(GapBuffer* gap) {
 }
 
 // insert operation of gap buffer.
-void gap_insertch(GapBuffer* gap, u8 ch) {
+void gap_insertch(GapBuffer* gap, u32 ch) {
   if (gap->c >= gap->ce) {
     gap_grow(gap);
   }
@@ -105,7 +105,7 @@ void gap_right(GapBuffer* gap, u32 times) {
 }
 
 // access the gap buffer using logical_indexing
-u8 gap_getch(const GapBuffer* gap, u32 logical_index) {
+u32 gap_getch(const GapBuffer* gap, u32 logical_index) {
   if (logical_index < GAPBUF_LEN(gap))
     return gap->start[GAPBUF_GET_BUFFER_INDEX(gap, logical_index)];
   return 0;

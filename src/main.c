@@ -1,7 +1,5 @@
-#include <stdbool.h>
 #include <ncurses.h>
 #include "include/itypes.h"
-#include "include/utils.h"
 #include "editor.c"
 
 i32 main() {

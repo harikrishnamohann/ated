@@ -10,87 +10,84 @@ TODO
  - undo-redo [_]
 */
 
-#include <assert.h>
 // #include <time.h>
 #include <ncurses.h>
 #include <stdbool.h>
 #include "include/utils.h"
 #include "include/itypes.h"
-
-#define GAP_RESIZE_STEP KB(4)
 #include "gap_buffer.c"
+#include "include/err.h"
+#include "include/vector.h"
 
-// lc_t will specify the maximum number of lines possible.
-#define lc_t u16
+VECTOR(u32, u32);
 
 #define SCROLL_MARGIN 3
 #define LNO_PADDING 8
 #define MAX_SNAPS 1000
-
-// An "_c" in the following struct names can be abbreviated as _component.
- 
-// A line is an abstraction over the stream of text. Enables performing
-// operations on editor at line level. line map is like an associative array.
-// array index is line number, and its content is start position of line
-// inside the buffer.
-struct lines_c { 
-  u32 *map; // lines lookup table; need mem reallocation
-  lc_t count;
-  lc_t capacity;
-};
 
 struct point { 
   u32 x;
   u32 y;
 }; 
 
-struct snap { i8 op; u32 start; u32 len; u8 *frame; };
+// struct snap { i8 op; u32 start; u32 len; u32 *frame; };
 
-enum undo_redo_operations {
-  insertch = 1,
-  removech = -1,
-};
+// enum undo_redo_operations {
+//   insertch = 1,
+//   removech = -1,
+// };
 
-// todo
-// implement dynamic array using a meta program or macros
-#define CREATE_DYNAMIC_ARRAY(TYPE) typedef struct { TYPE* arr; usize len; } TYPE##Array;
-
-CREATE_DYNAMIC_ARRAY(u32);
-
-
-struct snapshots_c {
-  struct {
-    u32Array content;
-    u32 start; // start index
-  } record;
-  struct snap undo[MAX_SNAPS];
-  struct snap redo[MAX_SNAPS];
-  u16 utop;
-  u16 rtop;
-  bool is_full; // utop and rtop treats undo and redo as circular array if this is set
-};
+// struct snapshots_c {
+//   struct {
+//     u32Vec content;
+//     u32 start; // start index
+//   } trace;
+//   struct snap undo[MAX_SNAPS];
+//   struct snap redo[MAX_SNAPS];
+//   u16 utop;
+//   u16 rtop;
+//   bool is_full; // utop and rtop treats undo and redo as circular array if this is set
+// };
 
 // NOTE: undo->undo->redo->modify => erase redo
-enum editor_modifiers {
+typedef u32 mods_t;
+
+enum editor_mods {
   lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
   _mask = 0xffff,
 };
 
 typedef struct {
-  u16 mods; // stores all modifiers used in the editor.
-  // states should only be modified through the designated methods.
+  mods_t mods; // stores all modifiers used in the editor.
   GapBuffer gap;
   struct point curs;
   struct point view;
-  struct lines_c lines;
-  struct snapshots_c snaps; // for undo-redo
+  u32Vec lines;
+  err_handler_t error;
 } Editor;
 
+// @ERRORS
+static enum {
+  editor_err_ok,
+  editor_err_malloc_failure,
+} ederr;
 
-/** @MODIFIER **/
-static inline void mods_set(Editor* ed, u16 new_mods) { ed->mods = ed->mods | new_mods; }
-static inline void mods_reset(Editor* ed, u16 new_mods) { ed->mods = ed->mods & ( new_mods ^ _mask); }
-static inline bool mods_has(Editor* ed, u16 mods) { return (ed->mods & mods) == mods; }
+void editor_err_handler(i32 errno, void* args) {
+  switch(errno) {
+    case editor_err_malloc_failure:
+      perror("A memory allocation in editor failed.");
+      endwin();
+      exit(-1);
+    case editor_err_ok:
+      return;
+  }
+}
+
+
+/** @MODS **/
+static inline void mods_set(Editor* ed, mods_t new_mods) { ed->mods = ed->mods | new_mods; }
+static inline void mods_reset(Editor* ed, mods_t new_mods) { ed->mods = ed->mods & ( new_mods ^ _mask); }
+static inline bool mods_has(Editor* ed, mods_t mods) { return (ed->mods & mods) == mods; }
 
 static void handle_implicit_mods(Editor* ed, u32 ch) {
   switch (ch) {
@@ -103,50 +100,26 @@ static void handle_implicit_mods(Editor* ed, u32 ch) {
 
 /** @LINES **/
 // the following functions return logical indices from lines.map.
-static inline u32 lnstart(Editor* ed, lc_t lno) { return ed->lines.map[lno]; }
-static inline u32 viewln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->view.y]; }
-static inline u32 cursln(Editor* ed, lc_t ln_offset) { return ed->lines.map[ln_offset + ed->curs.y]; }
+static inline u32 lnstart(Editor* ed, u32 lno) { return u32Vec_get(&ed->lines, lno); }
+static inline u32 viewln(Editor* ed, u32 ln_offset) { return u32Vec_get(&ed->lines, ln_offset + ed->view.y); }
+static inline u32 cursln(Editor* ed, u32 ln_offset) { return u32Vec_get(&ed->lines, ln_offset + ed->curs.y); }
 
 #define LN_EMPTY U32_MAX
 // returns logical end position of given lno from line component of editor.
 // returns LN_EMPTY for empty lines
-static u32 lnend(Editor* ed, lc_t lno) {
+static u32 lnend(Editor* ed, u32 lno) {
   u32 i = lnstart(ed, lno);
   u32 len = GAPBUF_LEN(&ed->gap);
-  if (i >= len) return LN_EMPTY;
-  while (i < len - 1 && gap_getch(&ed->gap, i) != '\n') i++;
+  if (i > len) return LN_EMPTY;
+  while (i < len && gap_getch(&ed->gap, i) != '\n') i++;
   return i;
 }
 
-// the following 4 operations expects curs_c before updation.
-static inline void incmt_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]++; }
-static inline void decmt_next_lines(Editor* ed) { for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) ed->lines.map[i]--; }
-
-static void increment_lc(Editor* ed) {
-  struct lines_c* lines = &ed->lines;
-  if (lines->count >= lines->capacity) {
-    lines->capacity += KB(1);
-    lines->map = realloc(lines->map, sizeof(u32) * lines->capacity);
-    assert(lines->map);
-  }
-  lines->count++;
-}
-
-static void add_newline(Editor* ed, u32 logical_pos) {
-  increment_lc(ed);
-  for (lc_t i = ed->lines.count - 1; i > ed->curs.y + 1; i--) {
-    ed->lines.map[i] = ed->lines.map[i - 1]; // shifting right from curs_lno + 1 pos
-  }
-  // curs_lno + 1 position should be unoccupied now
-  ed->lines.map[ed->curs.y + 1] = logical_pos; // new position is inserted there
-}
-
-static void remove_newline(Editor* ed) {
-  for (lc_t i = ed->curs.y + 1; i < ed->lines.count; i++) {
-    ed->lines.map[i - 1] = ed->lines.map[i];
-  }
-  ed->lines.count--;
-}
+// the following 4 operations expects curs before updation.
+static inline void adjust_lines_after_insert(Editor* ed) { for (u32 i = ed->curs.y + 1; i < ed->lines.len; i++) ed->lines._elements[i]++; }
+static inline void adjust_lines_after_remove(Editor* ed) { for (u32 i = ed->curs.y + 1; i < ed->lines.len; i++) ed->lines._elements[i]--; }
+static inline void update_lines_after_newline(Editor* ed) { u32Vec_insert(&ed->lines, ed->gap.c, ed->curs.y); }
+static inline void update_after_line_removal(Editor* ed) { u32Vec_remove(&ed->lines, ed->curs.y); }
 
 
 /** @VIEW **/
@@ -154,8 +127,10 @@ static void remove_newline(Editor* ed) {
 static void update_view(Editor* ed, u16 win_h, u16 win_w) {
   while (ed->curs.y - ed->view.y > win_h - SCROLL_MARGIN - 1) ed->view.y++; // downwards
   while (ed->view.y > 0 && ed->curs.y < ed->view.y + SCROLL_MARGIN) ed->view.y--; // upwards
-  u16 curs_len = lnend(ed, ed->curs.y) - cursln(ed, 0);
-  u16 curs_pos = ed->gap.c - cursln(ed, 0);
+  u32 end = lnend(ed, ed->curs.y);
+  if (end == LN_EMPTY) return;
+  u32 curs_len = end - cursln(ed, 0);
+  u32 curs_pos = ed->gap.c - cursln(ed, 0);
   while (ed->view.x < curs_len && curs_pos - ed->view.x >= win_w - LNO_PADDING - SCROLL_MARGIN - 1) ed->view.x++; // rightwards
   while (ed->view.x > 0 && curs_pos <= ed->view.x + SCROLL_MARGIN) ed->view.x--; // leftwards
 }
@@ -187,99 +162,74 @@ static void curs_mov_right(Editor* ed) {
 static void curs_mov_up(Editor* ed, u16 times) {
   if (ed->curs.y == 0) return;
   times = (times > ed->curs.y) ? ed->curs.y : times;
-  u16 target_lno = ed->curs.y - times;
+  u32 target_lno = ed->curs.y - times;
   u32 target_end = lnend(ed, target_lno);
   if (target_end == LN_EMPTY) return;
-  u16 target_len = target_end - lnstart(ed, target_lno);
+  u32 target_len = target_end - lnstart(ed, target_lno);
   u32 target_pos = lnstart(ed, target_lno) + MIN(ed->curs.x, target_len);
   gap_left(&ed->gap, ed->gap.c - target_pos);
   ed->curs.y -= times;
 }
 
 static void curs_mov_down(Editor* ed, u16 times) {
-  if (ed->curs.y >= ed->lines.count - 1) return;
-  times = (ed->curs.y + times > ed->lines.count - 1) ? ed->lines.count - ed->curs.y - 1 : times;
-  u16 target_lno = ed->curs.y + times;
+  if (ed->curs.y >= ed->lines.len - 1) return;
+  times = (ed->curs.y + times > ed->lines.len - 1) ? ed->lines.len - ed->curs.y - 1 : times;
+  u32 target_lno = ed->curs.y + times;
   u32 target_end = lnend(ed, target_lno);
   if (target_end == LN_EMPTY) return;
-  u16 target_len = target_end - lnstart(ed, target_lno);
+  u32 target_len = target_end - lnstart(ed, target_lno);
   u32 target_pos = lnstart(ed, target_lno) + MIN(ed->curs.x, target_len);
   gap_right(&ed->gap, target_pos - ed->gap.c);
   ed->curs.y += times;
 }
 
 /** @SNAPSHOTS **/
-static struct snap snap_init(i8 op, u32 start, u32 len, GapBuffer* gap) {
-  u8* buf = malloc(sizeof(i8) * len);
-  assert(buf);
-  for (int i = 0; i < len; i++) {
-    buf[i] = gap_getch(gap, i + start);
-  }
-  return (struct snap) {
-    .op = op,
-    .start = start,  
-    .len = len,
-    .frame = buf,
-  };
-}
-
-static inline void snap_free(struct snap* snap) { free(snap->frame); memset(snap, 0, sizeof(struct snap)); }
-
-static inline void snapshot_capture(Editor* ed) { ed->snaps.record.start = ed->gap.c; }
-
-static void snaps_insert(Editor* ed) {
-  u32 start = ed->snaps.record.start; // assuming insert operation
-  i8 op = insertch;
-  i32 len = ed->gap.c - start;
-  if (len < 0) { // remove operation
-    op = removech;
-    start -= len - 1;
-  }
-
-}
-
+// static struct snap snap_init(i8 op, u32 start, u32 len, GapBuffer* gap);
+// static inline void snap_free(struct snap* snap);
+// static inline void snapshot_capture(Editor* ed);
+// static void snaps_insert(Editor* ed);
 
 
 /** @EDITOR **/
 static Editor* editor_init() {
   Editor* ed = malloc(sizeof(Editor));
-  assert(ed);
+  if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
   *ed = (Editor){0};
+  ed->error = editor_err_handler;
 
   ed->gap = gap_init(GAP_RESIZE_STEP);
 
-  ed->lines.capacity = KB(1);
-  ed->lines.count = 1;
-  ed->lines.map = (u32*)malloc(sizeof(u32) * ed->lines.capacity);
-  assert(ed->lines.map);
-  memset(ed->lines.map, 0, sizeof(u32) * ed->lines.capacity);
+  ed->lines = u32Vec_init(1024, NULL);
+  u32Vec_insert(&ed->lines, 0, 0);
+
   return ed;
 }
 
 static void editor_free(Editor** ed) {
-  free((*ed)->lines.map);
+  u32Vec_free(&(*ed)->lines);
   gap_free(&(*ed)->gap);
+  **ed = (Editor){0};
   free(*ed);
   *ed = NULL;
 }
 
 static void editor_insertch(Editor* ed, u32 ch) {
   gap_insertch(&ed->gap, ch);
-  incmt_next_lines(ed);
+  adjust_lines_after_insert(ed);
   if (ch == '\n') {
-    add_newline(ed, ed->gap.c);
     ed->curs.y++;
+    update_lines_after_newline(ed);
   }
   update_cursx(ed, ed->gap.c - cursln(ed, 0));
 }
 
 static void editor_removech(Editor* ed) {
   u8 removing_ch = gap_getch(&ed->gap, ed->gap.c - 1);
-  if (!removing_ch) return;
-  decmt_next_lines(ed);
+  if (removing_ch == 0) return;
+  adjust_lines_after_remove(ed);
   gap_removech(&ed->gap);
   if (removing_ch == '\n') {
-    remove_newline(ed);
+    update_after_line_removal(ed);
     ed->curs.y--;
   }
   update_cursx(ed, ed->gap.c - cursln(ed, 0));
@@ -295,7 +245,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   mvwvline(edwin, 0, win_w - 1, ACS_VLINE, win_h);
   mvwprintw(edwin, 0, 1, "%5d ", ed->view.y + 1);
 
-  for (u32 ln = 0; ln < win_h  && ln + ed->view.y < ed->lines.count; ln++) {
+  for (u32 ln = 0; ln < win_h  && ln + ed->view.y < ed->lines.len; ln++) {
     u32 end = lnend(ed, ln + ed->view.y);
     if (end == LN_EMPTY) continue;
     u32 len = end - lnstart(ed, ln + ed->view.y) + 1;
@@ -307,7 +257,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
       if (ch) mvwaddch(edwin, ln, x + LNO_PADDING, ch);
     }
 
-    mvwprintw(edwin, ln + 1, 1, "%5d ", ln + ed->view.y + 2);
+    mvwprintw(edwin, ln + 1, 1, "    ~");
   }
   wmove(edwin, ed->curs.y - ed->view.y, MIN(win_w - 1 ,ed->gap.c - cursln(ed, 0) + LNO_PADDING - ed->view.x));
 }
@@ -345,7 +295,5 @@ void editor_process(WINDOW* edwin) {
   editor_free(&ed);
 }
 
-#undef lc_t
 #undef SCROLL_MARGIN
 #undef LN_EMPTY
-
