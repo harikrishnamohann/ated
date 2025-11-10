@@ -24,38 +24,33 @@ VECTOR(u32, u32);
 #define SCROLL_MARGIN 3
 #define LNO_PADDING 8
 #define MAX_SNAPS 1000
+#define TAB_WIDTH 2
 
 struct point { 
   u32 x;
   u32 y;
 }; 
 
-// struct snap { i8 op; u32 start; u32 len; u32 *frame; };
+enum timeline_op { idle, ins, del };
 
-// enum undo_redo_operations {
-//   insertch = 1,
-//   removech = -1,
-// };
+struct snap { enum timeline_op op; u32 start; u32 len; u32 *frame; };
 
-// struct snapshots_c {
-//   struct {
-//     u32Vec content;
-//     u32 start; // start index
-//   } trace;
-//   struct snap undo[MAX_SNAPS];
-//   struct snap redo[MAX_SNAPS];
-//   u16 utop;
-//   u16 rtop;
-//   bool is_full; // utop and rtop treats undo and redo as circular array if this is set
-// };
+struct timeline_c {
+  struct {
+    u32Vec content;
+    u32 start; // start index
+  } trace;
+  struct snap undo[MAX_SNAPS];
+  struct snap redo[MAX_SNAPS];
+  i32 utop;
+  i32 rtop;
+  bool is_full; // utop and rtop treats undo and redo as circular array if this is set
+};
 
-// NOTE: undo->undo->redo->modify => erase redo
-typedef u32 mods_t;
-
-enum editor_mods {
+typedef enum editor_mods {
   lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
   _mask = 0xffff,
-};
+} mods_t;
 
 typedef struct {
   mods_t mods; // stores all modifiers used in the editor.
@@ -64,6 +59,7 @@ typedef struct {
   struct point view;
   u32Vec lines;
   err_handler_t error;
+  struct timeline_c timeline;
 } Editor;
 
 // @ERRORS
@@ -183,12 +179,50 @@ static void curs_mov_down(Editor* ed, u16 times) {
   ed->curs.y += times;
 }
 
-/** @SNAPSHOTS **/
-// static struct snap snap_init(i8 op, u32 start, u32 len, GapBuffer* gap);
-// static inline void snap_free(struct snap* snap);
-// static inline void snapshot_capture(Editor* ed);
-// static void snaps_insert(Editor* ed);
+/** @SNAPS **/
+static struct snap snap_init(Editor* ed) {
+  enum timeline_op op;
+  u32 start, len;
+  if (ed->timeline.trace.start < ed->gap.c) {
+    op = ins;
+    len = ed->gap.c - ed->timeline.trace.start;
+    start = ed->timeline.trace.start;
+  } else if (ed->timeline.trace.start > ed->gap.c) {
+    op = del;
+    len = ed->timeline.trace.start - ed->gap.c;
+    start = ed->gap.c;
+  } else {
+    return (struct snap){.op = idle};
+  }
+  u32* frame = (u32*)malloc(sizeof(u32) * len);
+  if (frame == NULL) ed->error(editor_err_malloc_failure, NULL);
+  for (u32 i = 0; i < len; i++) {
+    frame[i] = u32Vec_get(&ed->timeline.trace.content, i);
+  }
+  return (struct snap) {op, start, len, frame};
+}
+static inline void snap_free(struct snap* snap) {
+  free(snap->frame);
+  *snap = (struct snap){0};
+}
 
+/** @TIMELINE **/
+static struct timeline_c timeline_init() {
+  struct timeline_c tl = {.rtop = -1, .utop = -1};
+  tl.trace.content = u32Vec_init(256, NULL);
+  return tl;
+}
+
+void timeline_free(struct timeline_c* tl) {
+  u32Vec_free(&tl->trace.content);
+  for (i32 i = 0; i <= tl->utop; i++) { snap_free(&tl->undo[i]); }
+  for (i32 i = 0; i <= tl->rtop; i++) { snap_free(&tl->undo[i]); }
+}
+
+static inline void timeline_trace_reset(Editor* ed) {
+  ed->timeline.trace.start = 0;
+  u32Vec_reset(&ed->timeline.trace.content);
+}
 
 /** @EDITOR **/
 static Editor* editor_init() {
@@ -196,18 +230,20 @@ static Editor* editor_init() {
   if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
   *ed = (Editor){0};
   ed->error = editor_err_handler;
+  ed->timeline = timeline_init();
 
   ed->gap = gap_init(GAP_RESIZE_STEP);
 
   ed->lines = u32Vec_init(1024, NULL);
   u32Vec_insert(&ed->lines, 0, 0);
-
   return ed;
 }
 
 static void editor_free(Editor** ed) {
   u32Vec_free(&(*ed)->lines);
   gap_free(&(*ed)->gap);
+  timeline_free(&(*ed)->timeline);
+
   **ed = (Editor){0};
   free(*ed);
   *ed = NULL;
@@ -274,7 +310,7 @@ void editor_process(WINDOW* edwin) {
   while ((ch = wgetch(edwin)) != CTRL('q')) {
     if (ch != ERR) {
       handle_implicit_mods(ed, ch);
-      if (ch >= 32 && ch < 127) { // printable characters
+      if (ch >= 32 && ch < 127) { // ascii printable character range
         editor_insertch(ed, ch);
       } else {
         switch (ch) {
@@ -285,6 +321,9 @@ void editor_process(WINDOW* edwin) {
           case KEY_BACKSPACE: editor_removech(ed);
             break;
           case KEY_ENTER: case '\n': editor_insertch(ed, '\n'); break;
+          case '\t' : editor_insertch(ed, '\t'); break; // todo
+          case CTRL('u'): editor_insertch(ed, 'U');break;
+          case CTRL('r'): editor_insertch(ed, 'R');break;
         }
       }
       editor_draw(edwin, ed);
@@ -297,3 +336,4 @@ void editor_process(WINDOW* edwin) {
 
 #undef SCROLL_MARGIN
 #undef LN_EMPTY
+#undef TAB_WIDTH

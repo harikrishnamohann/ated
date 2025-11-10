@@ -1,5 +1,7 @@
 #pragma once
 
+#include "itypes.h"
+
 // find min and max value
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
@@ -17,9 +19,9 @@
 #define MB(n) ((n) * 1024ULL * 1024ULL)
 #endif
 
-#ifndef ABS
-#define ABS(n) (n < 0 ? (n * -1) : (n))
-#endif
+static inline u64 ABS(i64 n) { return n < 0 ?  -n : n; }
+static inline u64 ABSDIFF(i64 a, i64 b) { i64 r = b - a; return (r < 0) ? -r : r; }
+
 /*
 ################################
 ## About measuring delta time ##

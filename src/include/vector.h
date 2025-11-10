@@ -131,7 +131,7 @@ static void PREFIX##Vec_free(PREFIX##Vec* arr) { \
   *arr = (PREFIX##Vec){0};\
 }
 
-#define __DEF_NEW(TYPE, PREFIX)\
+#define __DEF_INIT(TYPE, PREFIX)\
 static PREFIX##Vec PREFIX##Vec_init(usize capacity, err_handler_t func) {\
   PREFIX##Vec vec = {\
     ._elements = malloc(sizeof(TYPE) * capacity),\
@@ -146,6 +146,8 @@ static PREFIX##Vec PREFIX##Vec_init(usize capacity, err_handler_t func) {\
   return vec;\
 }
 
+#define __DEF_RESET(TYPE, PREFIX) void PREFIX##Vec_reset(PREFIX##Vec* vec) { vec->len = 0; }
+
 #define VECTOR(type, prefix) \
   __DEF_TYPE(type, prefix) \
   __DEF_GROW(type, prefix) \
@@ -153,6 +155,7 @@ static PREFIX##Vec PREFIX##Vec_init(usize capacity, err_handler_t func) {\
   __DEF_REMOVE(type, prefix) \
   __DEF_GET(type, prefix) \
   __DEF_SET(type, prefix) \
+  __DEF_RESET(type, prefix) \
+  __DEF_INIT(type, prefix) \
   __DEF_FREE(type, prefix) \
-  __DEF_NEW(type, prefix)
 
