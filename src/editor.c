@@ -15,7 +15,7 @@ TODO
 #include <stdbool.h>
 #include "include/utils.h"
 #include "include/itypes.h"
-#include "gap_buffer.c"
+#include "include/gap.h"
 #include "include/err.h"
 #include "include/vector.h"
 
@@ -47,13 +47,15 @@ struct timeline_c {
   bool is_full; // utop and rtop treats undo and redo as circular array if this is set
 };
 
-typedef enum editor_mods {
-  lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
+typedef enum ed_states {
+  st_lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
+  st_buffer_empty = 0x2,
+  st_modified = 0x4,
   _mask = 0xffff,
-} mods_t;
+} st_t;
 
 typedef struct {
-  mods_t mods; // stores all modifiers used in the editor.
+  st_t states; // stores all states used in the editor.
   GapBuffer gap;
   struct point curs;
   struct point view;
@@ -80,18 +82,10 @@ void editor_err_handler(i32 errno, void* args) {
 }
 
 
-/** @MODS **/
-static inline void mods_set(Editor* ed, mods_t new_mods) { ed->mods = ed->mods | new_mods; }
-static inline void mods_reset(Editor* ed, mods_t new_mods) { ed->mods = ed->mods & ( new_mods ^ _mask); }
-static inline bool mods_has(Editor* ed, mods_t mods) { return (ed->mods & mods) == mods; }
-
-static void handle_implicit_mods(Editor* ed, u32 ch) {
-  switch (ch) {
-    case KEY_UP:
-    case KEY_DOWN: mods_set(ed, lock_cursx); return;
-  }
-  mods_reset(ed, lock_cursx);
-}
+/** @states **/
+static inline void st_set(Editor* ed, st_t new_states) { ed->states = ed->states | new_states; }
+static inline void st_reset(Editor* ed, st_t new_states) { ed->states = ed->states & ( new_states ^ _mask); }
+static inline bool st_has(Editor* ed, st_t states) { return (ed->states & states) == states; }
 
 
 /** @LINES **/
@@ -105,7 +99,7 @@ static inline u32 cursln(Editor* ed, u32 ln_offset) { return u32Vec_get(&ed->lin
 // returns LN_EMPTY for empty lines
 static u32 lnend(Editor* ed, u32 lno) {
   u32 i = lnstart(ed, lno);
-  u32 len = GAPBUF_LEN(&ed->gap);
+  u32 len = GAP_LEN(&ed->gap);
   if (i > len) return LN_EMPTY;
   while (i < len && gap_getch(&ed->gap, i) != '\n') i++;
   return i;
@@ -132,7 +126,7 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 }
 
 /** @CURS **/
-static inline void update_cursx(Editor* ed, u16 pos) { if (!mods_has(ed, lock_cursx)) ed->curs.x = pos; }
+static inline void update_cursx(Editor* ed, u16 pos) { if (!st_has(ed, st_lock_cursx)) ed->curs.x = pos; }
 
 static void curs_mov_left(Editor* ed) {
   GapBuffer* gap = &ed->gap;
@@ -180,27 +174,29 @@ static void curs_mov_down(Editor* ed, u16 times) {
 }
 
 /** @SNAPS **/
+// inorder to create a snap frame, the trace field should be recorded initially
 static struct snap snap_init(Editor* ed) {
-  enum timeline_op op;
-  u32 start, len;
-  if (ed->timeline.trace.start < ed->gap.c) {
-    op = ins;
-    len = ed->gap.c - ed->timeline.trace.start;
-    start = ed->timeline.trace.start;
-  } else if (ed->timeline.trace.start > ed->gap.c) {
-    op = del;
-    len = ed->timeline.trace.start - ed->gap.c;
-    start = ed->gap.c;
-  } else {
-    return (struct snap){.op = idle};
-  }
-  u32* frame = (u32*)malloc(sizeof(u32) * len);
-  if (frame == NULL) ed->error(editor_err_malloc_failure, NULL);
-  for (u32 i = 0; i < len; i++) {
-    frame[i] = u32Vec_get(&ed->timeline.trace.content, i);
+  u32 trace_start = ed->timeline.trace.start;
+  u32 trace_c = ed->gap.c;
+
+  enum timeline_op op = idle;
+  u32 start = MIN(trace_start, trace_c);
+  u32 len = ABSDIFF(trace_start, trace_c);
+  u32* frame = NULL;
+
+  if (trace_start < trace_c) op = ins;
+  else if (trace_start > trace_c) op = del;
+
+  if (op != idle) {
+    frame = (u32*)malloc(sizeof(u32) * len);
+    if (frame == NULL) ed->error(editor_err_malloc_failure, NULL);
+    for (u32 i = 0; i < len; i++) {
+      frame[i] = u32Vec_get(&ed->timeline.trace.content, i);
+    }
   }
   return (struct snap) {op, start, len, frame};
 }
+
 static inline void snap_free(struct snap* snap) {
   free(snap->frame);
   *snap = (struct snap){0};
@@ -225,6 +221,17 @@ static inline void timeline_trace_reset(Editor* ed) {
 }
 
 /** @EDITOR **/
+static void editor_handle_implicit_states(Editor* ed, u32 ch) {
+  if (st_has(ed, st_modified)) {
+    // handle undo redo trace mechanism
+  }
+  switch (ch) {
+    case KEY_UP:
+    case KEY_DOWN: st_set(ed, st_lock_cursx); return;
+  }
+  st_reset(ed, st_lock_cursx | st_modified);
+}
+
 static Editor* editor_init() {
   Editor* ed = malloc(sizeof(Editor));
   if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
@@ -236,6 +243,8 @@ static Editor* editor_init() {
 
   ed->lines = u32Vec_init(1024, NULL);
   u32Vec_insert(&ed->lines, 0, 0);
+
+  st_set(ed, st_buffer_empty);
   return ed;
 }
 
@@ -257,6 +266,8 @@ static void editor_insertch(Editor* ed, u32 ch) {
     update_lines_after_newline(ed);
   }
   update_cursx(ed, ed->gap.c - cursln(ed, 0));
+  st_set(ed, st_modified);
+  if (st_has(ed, st_buffer_empty)) { st_reset(ed, st_buffer_empty); }
 }
 
 static void editor_removech(Editor* ed) {
@@ -269,6 +280,8 @@ static void editor_removech(Editor* ed) {
     ed->curs.y--;
   }
   update_cursx(ed, ed->gap.c - cursln(ed, 0));
+  st_set(ed, st_modified);
+  if (GAP_LEN(&ed->gap) == 0) { st_set(ed, st_buffer_empty); }
 }
 
 static void editor_draw(WINDOW* edwin, Editor* ed) {
@@ -279,7 +292,14 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   werase(edwin);
   mvwvline(edwin, 0, 0, ACS_VLINE, win_h);
   mvwvline(edwin, 0, win_w - 1, ACS_VLINE, win_h);
-  mvwprintw(edwin, 0, 1, "%5d ", ed->view.y + 1);
+  mvwprintw(edwin, 0, 1, "%5d  ", ed->view.y + 1);
+
+  if (st_has(ed, st_buffer_empty)) {
+    char* msg = "ctrl + q to quit";
+    mvwprintw(edwin, CENTER(win_h, 3), CENTER(win_w, strlen(msg)), "%s", msg);
+    wmove(edwin, 0, LNO_PADDING);
+    return;
+  }
 
   for (u32 ln = 0; ln < win_h  && ln + ed->view.y < ed->lines.len; ln++) {
     u32 end = lnend(ed, ln + ed->view.y);
@@ -295,6 +315,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
 
     mvwprintw(edwin, ln + 1, 1, "    ~");
   }
+
   wmove(edwin, ed->curs.y - ed->view.y, MIN(win_w - 1 ,ed->gap.c - cursln(ed, 0) + LNO_PADDING - ed->view.x));
 }
 
@@ -309,7 +330,7 @@ void editor_process(WINDOW* edwin) {
   wrefresh(edwin);
   while ((ch = wgetch(edwin)) != CTRL('q')) {
     if (ch != ERR) {
-      handle_implicit_mods(ed, ch);
+      editor_handle_implicit_states(ed, ch);
       if (ch >= 32 && ch < 127) { // ascii printable character range
         editor_insertch(ed, ch);
       } else {

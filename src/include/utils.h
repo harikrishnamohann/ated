@@ -20,7 +20,7 @@
 #endif
 
 static inline u64 ABS(i64 n) { return n < 0 ?  -n : n; }
-static inline u64 ABSDIFF(i64 a, i64 b) { i64 r = b - a; return (r < 0) ? -r : r; }
+static inline u64 ABSDIFF(i64 a, i64 b) { return (b > a) ? b - a : a - b; }
 
 /*
 ################################
