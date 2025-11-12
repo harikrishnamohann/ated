@@ -18,7 +18,6 @@ TODO
  - make a header file and compile this separately once i am done with this[ ]
 */
 
-#include <bits/time.h>
 #include <time.h>
 #include <ncurses.h>
 #include <stdbool.h>
@@ -43,14 +42,14 @@ struct point {
   u32 y;
 }; 
 
-enum timeline_op { op_idle, op_ins, op_del };
+enum timeline_op { op_idle, op_ins = 1, op_del = -1 };
 
 struct snap { enum timeline_op op; u32 start; u32Vec frame; };
 
-struct timeline_c {
+struct timeline {
   struct timespec time;
   struct snap undo[MAX_SNAPS];
-  struct snap* redo[MAX_SNAPS]; // redo can use the source of truth from undo. no need for new struct snap
+  struct snap redo[MAX_SNAPS];
   isize utop;
   isize rtop;
 };
@@ -58,6 +57,7 @@ struct timeline_c {
 typedef enum ed_states {
   st_lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
   st_buffer_empty = 0x2,
+  st_undoing = 0x4,
   _mask = 0xffff,
 } st_t;
 
@@ -68,8 +68,18 @@ typedef struct {
   struct point view;
   u32Vec lines;
   err_handler_t error;
-  struct timeline_c timeline;
+  struct timeline timeline;
 } Editor;
+
+// reverses u32Vec
+static void u32Vec_rev(u32Vec* vec) {
+  for (isize i = 0; i < vec->len / 2; i++) {
+    u32 beg_val = u32Vec_get(vec, i);
+    u32 end_val = u32Vec_get(vec, _END(i));
+    u32Vec_set(vec, end_val, i);
+    u32Vec_set(vec, beg_val, _END(i));
+  }
+}
 
 // @ERRORS
 static enum {
@@ -203,7 +213,7 @@ static void inline snap_push(struct snap* stack, isize* top, struct snap new) {
 }
 
 // will return source reference instead of a copy
-static inline struct snap* snap_pop(struct snap* stack, i32* top) {
+static inline struct snap* snap_pop(struct snap* stack, isize* top) {
   if (*top == -1) return NULL;
   isize i = *top % MAX_SNAPS;
   (*top)--;
@@ -213,20 +223,16 @@ static inline struct snap* snap_pop(struct snap* stack, i32* top) {
 /** @TIMELINE **/
 static inline void timeline_fetch_time(Editor* ed) { clock_gettime(CLOCK_MONOTONIC, &ed->timeline.time); }
 
-static struct timeline_c timeline_init() {
-  struct timeline_c tl = {0};
+static struct timeline timeline_init() {
+  struct timeline tl = {0};
   tl.utop = STK_EMTY;
   tl.rtop = STK_EMTY;
   clock_gettime(CLOCK_MONOTONIC, &tl.time);
   return tl;
 }
 
-void timeline_free(struct timeline_c* tl) {
-  for (i32 i = 0; i <= tl->utop; i++) { snap_free(&tl->undo[i]); }
-  for (i32 i = 0; i <= tl->rtop; i++) { snap_free(&tl->undo[i]); }
-}
-
 static void timeline_update(Editor* ed, u32 ch, enum timeline_op op) {
+  if (st_has(ed, st_undoing)) return;
   struct snap* undo = ed->timeline.undo;
   isize* top = &ed->timeline.utop;
   if (*top == -1 || elapsed_seconds(&ed->timeline.time) > UNDO_EXPIRY || op != undo[*top].op) {
@@ -237,13 +243,45 @@ static void timeline_update(Editor* ed, u32 ch, enum timeline_op op) {
   timeline_fetch_time(ed);
 }
 
+void timeline_clear_redo(struct timeline* tl) {
+  if (tl->rtop == STK_EMTY) return;
+  struct snap* action = snap_pop(tl->redo, &tl->rtop);
+  while (action != NULL) {
+    snap_free(action);
+    action = snap_pop(tl->redo, &tl->rtop);
+  }
+}
+
+static void editor_insertch(Editor* ed, u32 ch);
+static void editor_removech(Editor* ed);
+
+static void timeline_rewind_action(Editor* ed, struct snap* action) {
+  if (action->op == op_ins) {
+    action->start += action->frame.len;
+    gap_move(&ed->gap, action->start);
+    for (u32 i = 0; i < action->frame.len; i++) editor_removech(ed);    
+  } else if (action->op == op_del) {
+    action->start -= action->frame.len;
+    for (isize i = 0; i < action->frame.len; i++) editor_insertch(ed, u32Vec_get(&action->frame, _END(i)));
+  }
+  action->op *= -1;
+  u32Vec_rev(&action->frame);
+}
+
+void timeline_free(struct timeline* tl) {
+  timeline_clear_redo(tl);
+  for (i32 i = 0; i <= tl->utop; i++) { snap_free(&tl->undo[i]); }
+  for (i32 i = 0; i <= tl->rtop; i++) { snap_free(&tl->undo[i]); }
+}
+
 /** @EDITOR **/
 static void editor_handle_implicit_states(Editor* ed, u32 ch) {
+  if (!st_has(ed, st_undoing)) timeline_clear_redo(&ed->timeline);
   switch (ch) {
     case KEY_UP:
     case KEY_DOWN: st_set(ed, st_lock_cursx); return;
   }
-  st_reset(ed, st_lock_cursx);
+  st_reset(ed, st_lock_cursx | st_undoing);
 }
 
 static Editor* editor_init() {
@@ -285,8 +323,8 @@ static void editor_insertch(Editor* ed, u32 ch) {
 }
 
 static void editor_removech(Editor* ed) {
-  u8 removing_ch = gap_getch(&ed->gap, ed->gap.c - 1);
-  if (removing_ch == 0) return;
+  u32 removing_ch = gap_getch(&ed->gap, ed->gap.c - 1);
+  if ((u8)removing_ch == 0) return;
   timeline_update(ed, removing_ch, op_del);
   adjust_lines_after_remove(ed);
   gap_removech(&ed->gap);
@@ -298,7 +336,24 @@ static void editor_removech(Editor* ed) {
   if (GAP_LEN(&ed->gap) == 0) { st_set(ed, st_buffer_empty); }
 }
 
-static inline void help(WINDOW* win, u16 w, u16 h) {
+void editor_undo(Editor* ed) {
+  st_set(ed, st_undoing);
+  struct snap* action = snap_pop(ed->timeline.undo, &ed->timeline.utop);
+  if (action == NULL) return;
+  timeline_rewind_action(ed, action);
+  snap_push(ed->timeline.redo, &ed->timeline.rtop, *action);
+  *action = (struct snap){0};
+}
+
+void editor_redo(Editor* ed) {
+  st_set(ed, st_undoing);
+  struct snap* action = snap_pop(ed->timeline.redo, &ed->timeline.rtop);
+  if (action == NULL) return;
+  timeline_rewind_action(ed, action);
+  snap_push(ed->timeline.undo, &ed->timeline.utop, *action);
+}
+
+static inline void editor_help(WINDOW* win, u16 w, u16 h) {
   char* msg = "ctrl + q to quit";
   mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s", msg);
   wmove(win, 0, LNO_PADDING);
@@ -315,7 +370,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   mvwprintw(edwin, 0, 1, "%5d  ", ed->view.y + 1);
 
   if (st_has(ed, st_buffer_empty)) {
-    help(edwin, win_w, win_h);
+    editor_help(edwin, win_w, win_h);
     return;
   }
 
@@ -364,8 +419,8 @@ void editor_process(WINDOW* edwin) {
             break;
           case KEY_ENTER: case '\n': editor_insertch(ed, '\n'); break;
           case '\t' : editor_insertch(ed, '\t'); break;
-          case CTRL('u'): editor_insertch(ed, 'U');break;
-          case CTRL('r'): editor_insertch(ed, 'R');break;
+          case CTRL('u'): editor_undo(ed); break;
+          case CTRL('r'): editor_redo(ed) ;break;
         }
       }
       editor_draw(edwin, ed);

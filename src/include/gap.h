@@ -104,11 +104,26 @@ static void gap_right(GapBuffer* gap, u32 times) {
   }
 }
 
+// move gap to specified pos
+static void gap_move(GapBuffer* gap, u32 pos) {
+  if (gap->c > pos) {
+    gap_left(gap, gap->c - pos);
+  } else if (gap->c < pos) {
+    gap_right(gap, pos - gap->c);
+  }
+}
+
 // access the gap buffer using logical_indexing
 static u32 gap_getch(const GapBuffer* gap, u32 logical_index) {
   if (logical_index < GAP_LEN(gap))
     return gap->start[GAP_GET_BUFFER_INDEX(gap, logical_index)];
   return 0;
+}
+
+// modify ch at index
+static void gap_setch(GapBuffer* gap, u32 logical_index, u32 ch) {
+  if (logical_index < GAP_LEN(gap))
+    gap->start[GAP_GET_BUFFER_INDEX(gap, logical_index)] = ch;
 }
 
 #undef GAP_RESIZE_FACTOR
