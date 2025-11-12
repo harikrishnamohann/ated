@@ -31,7 +31,7 @@
   #define __SET_REALLOC_SIZE(capacity) ((capacity) = (capacity) + 1024)
 #endif
 
-#define VEND(i) (-((i) + 1))
+#define _END(i) (-((i) + 1))
 
 enum {
   __vecerr_malloc_failure,
