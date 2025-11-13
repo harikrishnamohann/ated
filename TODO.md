@@ -1,0 +1,16 @@
+ - [x] up and down movements  
+- [x] sticky scrolling  
+- [x] split editor operations into component level  
+- [x] make line updation incremental *(using gap buffer)*  
+- [x] make Editor window attachable  
+- [x] handle horizontal text overflows  
+- [x] undo-redo  
+- [ ] visual modifiers (selection and ncurses attributes)  
+- [ ] status line  
+- [ ] indentation  
+- [ ] command palette  
+- [ ] syntax highlighting  
+- [ ] helix mode  
+- [ ] multiple instances  
+- [ ] make a header file and compile this separately once done
+

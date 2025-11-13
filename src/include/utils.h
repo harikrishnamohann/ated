@@ -14,7 +14,7 @@
 #define CTRL(x) ((x) & 0x1F)
 
 static inline u64 ABS(i64 n) { return n < 0 ?  -n : n; }
-static inline u64 ABSDIFF(i64 a, i64 b) { return (b > a) ? b - a : a - b; }
+static inline i64 DELTA(i64 a, i64 b) { return b - a; }
 
 // current_time and prev_time should be of type: struct timespec
 static inline f32 elapsed_seconds(struct timespec* since) {
