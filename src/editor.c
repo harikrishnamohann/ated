@@ -1,6 +1,5 @@
 #include <time.h>
 #include <ncurses.h>
-#include <stdbool.h>
 #include "include/utils.h"
 #include "include/itypes.h"
 #include "include/gap.h"
@@ -14,8 +13,8 @@ VECTOR(u32, u32);
 
 #define TAB_WIDTH 2
 
-#define UNDO_LIMIT 3
-#define UNDO_EXPIRY MSEC(701)
+#define UNDO_LIMIT 1024
+#define UNDO_EXPIRY MSEC(650)
 #define STK_EMTY -1
 
 #define LN_EMPTY U32_MAX
@@ -25,9 +24,17 @@ struct point {
   u32 y;
 }; 
 
-enum timeline_op { op_idle, op_ins = 1, op_del = -1 };
+enum timeline_op {
+  op_idle = 0,
+  op_ins = 1,
+  op_del = -1
+};
 
-struct action { enum timeline_op op; u32 start; u32Vec frame; };
+struct action {
+  enum timeline_op op;
+  u32 start;
+  u32Vec frame;
+};
 
 struct timeline {
   struct timespec time;
@@ -37,15 +44,16 @@ struct timeline {
   isize rtop;
 };
 
-typedef enum ed_states {
-  st_lock_cursx = 0x1, // prevent writing to editor.curs.x; method: editor_update_cursx()
-  st_buffer_empty = 0x2,
-  st_undoing = 0x4,
-  _mask = 0xffff,
-} st_t;
+enum editor_ctrl {
+  st_lock_cursx = 0x1, // prevent writing to editor.curs.x for sticky cursor behaviour
+  blank = 0x2, // indicates the editor text buffer is empty
+  undoing = 0x4, // editor is performing an undo or redo operation
+  commit_action = 0x8, // to force commit current timeline to undo
+  _mask = 0xffffffff,
+};
 
 typedef struct {
-  st_t states; // stores all states used in the editor.
+  enum editor_ctrl ctrl;
   GapBuffer gap;
   struct point curs;
   struct point view;
@@ -83,9 +91,9 @@ void editor_err_handler(i32 errno, void* args) {
 
 
 /** @states **/
-static inline void st_set(Editor* ed, st_t new_states) { ed->states = ed->states | new_states; }
-static inline void st_reset(Editor* ed, st_t new_states) { ed->states = ed->states & ( new_states ^ _mask); }
-static inline bool st_has(Editor* ed, st_t states) { return (ed->states & states) == states; }
+static inline void _set(enum editor_ctrl* st, enum editor_ctrl set) { *st = *st | set; }
+static inline void _reset(enum editor_ctrl* st, enum editor_ctrl reset) { *st = *st & ( reset ^ _mask); }
+static inline bool _has(enum editor_ctrl st, enum editor_ctrl has) { return (st & has) == has; }
 
 
 /** @LINES **/
@@ -125,7 +133,7 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 }
 
 /** @CURS **/
-static inline void update_cursx(Editor* ed, u16 pos) { if (!st_has(ed, st_lock_cursx)) ed->curs.x = pos; }
+static inline void update_cursx(Editor* ed, u16 pos) { if (!_has(ed->ctrl, st_lock_cursx)) ed->curs.x = pos; }
 
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
@@ -226,13 +234,15 @@ void timeline_clear_redo(struct timeline* tl) {
   tl->rtop = STK_EMTY;
 }
 
-static void timeline_update(Editor* ed, u32 ch, enum timeline_op op) {
-  timeline_clear_redo(&ed->timeline);
+static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
+  if (_has(ed->ctrl, undoing)) return;
+  if (ed->timeline.rtop != STK_EMTY) timeline_clear_redo(&ed->timeline);
   struct action* undo = ed->timeline.undo;
   isize* top = &ed->timeline.utop;
-  if (*top == -1 || elapsed_seconds(&ed->timeline.time) > UNDO_EXPIRY || op != undo[*top % UNDO_LIMIT].op) {
+  if (*top == -1 || _has(ed->ctrl, commit_action) || elapsed_seconds(&ed->timeline.time) > UNDO_EXPIRY || op != undo[*top % UNDO_LIMIT].op) {
     struct action new = action_init(ed->gap.c, op);
     action_push(undo, top, new);
+    _reset(&ed->ctrl, commit_action);
   }
   u32Vec_insert(&undo[*top % UNDO_LIMIT].frame, ch, _END(0));
   timeline_fetch_time(ed);
@@ -249,11 +259,14 @@ void timeline_free(struct timeline* tl) {
 
 /** @EDITOR **/
 static void editor_handle_implicit_states(Editor* ed, u32 ch) {
+  _reset(&ed->ctrl, undoing);
   switch (ch) {
+    case KEY_LEFT:
+    case KEY_RIGHT: _set(&ed->ctrl, commit_action); break;
     case KEY_UP:
-    case KEY_DOWN: st_set(ed, st_lock_cursx); return;
+    case KEY_DOWN: _set(&ed->ctrl, st_lock_cursx | commit_action); return;
   }
-  st_reset(ed, st_lock_cursx | st_undoing);
+  _reset(&ed->ctrl, st_lock_cursx);
 }
 
 static Editor* editor_init() {
@@ -268,7 +281,7 @@ static Editor* editor_init() {
   ed->lines = u32Vec_init(1024, NULL);
   u32Vec_insert(&ed->lines, 0, 0);
 
-  st_set(ed, st_buffer_empty);
+  _set(&ed->ctrl, blank);
   return ed;
 }
 
@@ -283,7 +296,7 @@ static void editor_free(Editor** ed) {
 }
 
 static void editor_insertch(Editor* ed, u32 ch) {
-  if (!st_has(ed, st_undoing)) timeline_update(ed, ch, op_ins);
+  if (!_has(ed->ctrl, undoing)) editor_update_timeline(ed, ch, op_ins);
   gap_insertch(&ed->gap, ch);
   adjust_lines_after_insert(ed);
   if (ch == '\n') {
@@ -291,13 +304,17 @@ static void editor_insertch(Editor* ed, u32 ch) {
     update_lines_after_newline(ed);
   }
   update_cursx(ed, ed->gap.c - cursln(ed, 0));
-  if (st_has(ed, st_buffer_empty)) { st_reset(ed, st_buffer_empty); }
+  if (_has(ed->ctrl, blank)) {
+    _reset(&ed->ctrl, blank);
+  }
 }
 
 static void editor_removech(Editor* ed) {
   u32 removing_ch = gap_getch(&ed->gap, ed->gap.c - 1);
   if ((u8)removing_ch == 0) return;
-  if (!st_has(ed, st_undoing)) timeline_update(ed, removing_ch, op_del);
+  if (!_has(ed->ctrl, undoing)) {
+    editor_update_timeline(ed, removing_ch, op_del);
+  }
   adjust_lines_after_remove(ed);
   gap_removech(&ed->gap);
   if (removing_ch == '\n') {
@@ -305,7 +322,7 @@ static void editor_removech(Editor* ed) {
     ed->curs.y--;
   }
   update_cursx(ed, ed->gap.c - cursln(ed, 0));
-  if (GAP_LEN(&ed->gap) == 0) { st_set(ed, st_buffer_empty); }
+  if (GAP_LEN(&ed->gap) == 0) { _set(&ed->ctrl, blank); }
 }
 
 static void timeline_invert_action(Editor* ed, struct action* action) {
@@ -325,7 +342,7 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
 }
 
 void editor_undo(Editor* ed) {
-  st_set(ed, st_undoing);
+  _set(&ed->ctrl, undoing);
   struct action* action = action_pop(ed->timeline.undo, &ed->timeline.utop);
   if (action == NULL) return;
   timeline_invert_action(ed, action);
@@ -334,7 +351,7 @@ void editor_undo(Editor* ed) {
 }
 
 void editor_redo(Editor* ed) {
-  st_set(ed, st_undoing);
+  _set(&ed->ctrl, undoing);
   struct action* action = action_pop(ed->timeline.redo, &ed->timeline.rtop);
   if (action == NULL) return;
   timeline_invert_action(ed, action);
@@ -355,10 +372,9 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
 
   werase(edwin);
   mvwvline(edwin, 0, 0, ACS_VLINE, win_h);
-  mvwvline(edwin, 0, win_w - 1, ACS_VLINE, win_h);
   mvwprintw(edwin, 0, 1, "%5d  ", ed->view.y + 1);
 
-  if (st_has(ed, st_buffer_empty)) {
+  if (_has(ed->ctrl, blank)) {
     editor_help(edwin, win_w, win_h);
     return;
   }
@@ -369,7 +385,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     u32 len = end - lnstart(ed, ln + ed->view.y) + 1;
     mvwprintw(edwin, ln, 1, "%5d ", ln + ed->view.y + 1);
 
-    for (u16 x = 0; x + ed->view.x < len && x + LNO_PADDING < win_w - 1; x++) {
+    for (u16 x = 0; x + ed->view.x < len && x + LNO_PADDING < win_w; x++) {
       u8 ch = gap_getch(&ed->gap, x + viewln(ed, ln) + ed->view.x);
       if (ch == '\n') break;
       if (ch) mvwaddch(edwin, ln, x + LNO_PADDING, ch);
@@ -400,8 +416,7 @@ void editor_process(WINDOW* edwin) {
           case KEY_RIGHT: curs_mov_right(ed, 1); break;
           case KEY_UP: curs_mov_up(ed, 1); break;
           case KEY_DOWN: curs_mov_down(ed, 1); break;
-          case KEY_BACKSPACE: editor_removech(ed);
-            break;
+          case KEY_BACKSPACE: editor_removech(ed); break;
           case KEY_ENTER: case '\n': editor_insertch(ed, '\n'); break;
           case '\t' : editor_insertch(ed, '\t'); break;
           case CTRL('u'): editor_undo(ed); break;
