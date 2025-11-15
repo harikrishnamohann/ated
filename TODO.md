@@ -5,7 +5,7 @@
 - [x] make Editor window attachable  
 - [x] handle horizontal text overflows  
 - [x] undo-redo  
-- [ ] implement lazy line updation technique and use gap buffer for lines
+- [x] implement lazy line updation technique and use gap buffer for lines
 - [ ] visual modifiers (selection and ncurses attributes)  
 - [ ] status line  
 - [ ] indentation  
