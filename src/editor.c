@@ -42,7 +42,6 @@ enum editor_ctrl {
   blank = 0x2, // indicates the editor text buffer is empty
   undoing = 0x4, // editor is performing an undo or redo operation
   commit_action = 0x8, // to force commit current timeline to undo
-  _mask = U32_MAX,
 };
 
 typedef struct {
@@ -51,6 +50,7 @@ typedef struct {
   struct { u32 offset; u32 y; } curs;
   struct { u32 x; u32 y; } view;
   u32Vec lines;
+  isize lineDelta;
   err_handler_t error;
   struct timeline timeline;
 } Editor;
@@ -75,25 +75,31 @@ void editor_err_handler(i32 errno, void* args) {
 
 /** @states **/
 static inline void _set(enum editor_ctrl* st, enum editor_ctrl set) { *st = *st | set; }
-static inline void _reset(enum editor_ctrl* st, enum editor_ctrl reset) { *st = *st & ( reset ^ _mask); }
+static inline void _reset(enum editor_ctrl* st, enum editor_ctrl reset) { *st = *st & ~reset; }
 static inline bool _has(enum editor_ctrl st, enum editor_ctrl has) { return (st & has) == has; }
 
 
 /** @LINES **/
-static inline u32 gapc(Editor* ed) { return ed->gap.c; }
-static inline u32 lnbeg(Editor* ed, u32 lno) { return u32Vec_get(&ed->lines, lno); }
-static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= ed->lines.len - 1) ? GAP_LEN(&ed->gap) : lnbeg(ed, lno + 1) - 1; }
 static inline u32 lnlen(Editor* ed) { return ed->lines.len; }
 static inline u32 lncount(Editor* ed) { return ed->lines.len; }
+static inline u32 gapc(Editor* ed) { return ed->gap.c; }
+static inline u32 lnbeg(Editor* ed, u32 lno) { return u32Vec_get(&ed->lines, lno) + (lno > ed->curs.y ? ed->lineDelta : 0); }
+static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= lncount(ed) - 1) ? GAP_LEN(&ed->gap) : lnbeg(ed, lno + 1) - 1; }
 
 static inline u32 cursx(Editor* ed) { return gapc(ed) - lnbeg(ed, ed->curs.y); }
 static inline u32 cursy(Editor* ed) { return ed->curs.y; }
 
-// the following 4 operations expects curs before updation.
-static inline void adjust_lines_after_insert(Editor* ed) { for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) ed->lines._elements[i]++; }
-static inline void adjust_lines_after_remove(Editor* ed) { for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) ed->lines._elements[i]--; }
-static inline void insert_line(Editor* ed) { u32Vec_insert(&ed->lines, gapc(ed), cursy(ed)); }
-static inline void remove_line(Editor* ed) { u32Vec_remove(&ed->lines, cursy(ed)); }
+static inline void insert_line(Editor* ed) { u32Vec_insert(&ed->lines, gapc(ed), ++ed->curs.y);  }
+static inline void remove_line(Editor* ed) { u32Vec_remove(&ed->lines, ed->curs.y--); }
+
+static void lncommit(Editor* ed) {
+  for (u32 i = cursy(ed) + 1; i < lnlen(ed); i++) {
+    u32 change = u32Vec_get(&ed->lines, i) + ed->lineDelta;
+    u32Vec_set(&ed->lines, change, i);
+  }
+  ed->lineDelta = 0;
+}
+
 
 
 
@@ -126,6 +132,7 @@ static inline void update_cursx(Editor* ed, u32 pos) { if (!_has(ed->ctrl, lock_
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
   _set(&ed->ctrl, lock_curs_offset | commit_action);
+  lncommit(ed);
 
   if (times > 0) {
     if (cursy(ed) == 0) return;
@@ -149,6 +156,7 @@ static void curs_mov_left(Editor* ed, u32 times) {
   _set(&ed->ctrl, commit_action);
   while (gapc(ed) > 0 && times > 0) {
     if (gap_getch(&ed->gap, gapc(ed) - 1) == '\n') {
+      lncommit(ed);
       ed->curs.y--;
     }
     gap_left(&ed->gap, 1);
@@ -161,6 +169,7 @@ static void curs_mov_right(Editor* ed, u32 times) {
   _set(&ed->ctrl, commit_action);
   while (gapc(ed) < GAP_LEN(&ed->gap) && times > 0) {
     if (gap_getch(&ed->gap, gapc(ed)) == '\n') {
+      lncommit(ed);
       ed->curs.y++;
     }
     gap_right(&ed->gap, 1);
@@ -292,9 +301,8 @@ static void editor_free(Editor** ed) {
 static void editor_insertch(Editor* ed, u32 ch) {
   if (!_has(ed->ctrl, undoing)) editor_update_timeline(ed, ch, op_ins);
   gap_insertch(&ed->gap, ch);
-  adjust_lines_after_insert(ed);
+  ed->lineDelta++;
   if (ch == '\n') {
-    ed->curs.y++;
     insert_line(ed);
   }
   update_cursx(ed, cursx(ed));
@@ -307,11 +315,10 @@ static void editor_removech(Editor* ed) {
   if (!_has(ed->ctrl, undoing)) {
     editor_update_timeline(ed, removing_ch, op_del);
   }
-  adjust_lines_after_remove(ed);
   gap_removech(&ed->gap);
+  ed->lineDelta--;
   if (removing_ch == '\n') {
     remove_line(ed);
-    ed->curs.y--;
   }
   update_cursx(ed, cursx(ed));
   if (GAP_LEN(&ed->gap) == 0) { _set(&ed->ctrl, blank); }
