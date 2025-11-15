@@ -3,10 +3,6 @@
 #include "itypes.h"
 #include <time.h>
 
-// find min and max value
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-#define MAX(a,b) ((a) > (b) ? (a) : (b))
-
 // to find the center of offseted length
 #define CENTER(length, offset) ((((length) - (offset)) / 2))
 
@@ -15,6 +11,8 @@
 
 static inline u64 ABS(i64 n) { return n < 0 ?  -n : n; }
 static inline i64 DELTA(i64 a, i64 b) { return b - a; }
+static inline isize MIN(isize a, isize b) { return a < b ? a : b; }
+static inline isize MAX(isize a, isize b) { return a > b ? a : b; }
 
 // current_time and prev_time should be of type: struct timespec
 static inline f32 elapsed_seconds(struct timespec* since) {
