@@ -45,11 +45,11 @@ struct timeline {
 };
 
 enum editor_ctrl {
-  st_lock_cursx = 0x1, // prevent writing to editor.curs.x for sticky cursor behaviour
+  lock_cursx = 0x1, // prevent writing to editor.curs.x for sticky cursor behaviour
   blank = 0x2, // indicates the editor text buffer is empty
   undoing = 0x4, // editor is performing an undo or redo operation
   commit_action = 0x8, // to force commit current timeline to undo
-  _mask = 0xffffffff,
+  _mask = U32_MAX,
 };
 
 typedef struct {
@@ -61,16 +61,6 @@ typedef struct {
   err_handler_t error;
   struct timeline timeline;
 } Editor;
-
-// reverses u32Vec
-static void u32Vec_rev(u32Vec* vec) {
-  for (isize i = 0; i < vec->len / 2; i++) {
-    u32 beg_val = u32Vec_get(vec, i);
-    u32 end_val = u32Vec_get(vec, _END(i));
-    u32Vec_set(vec, end_val, i);
-    u32Vec_set(vec, beg_val, _END(i));
-  }
-}
 
 // @ERRORS
 static enum {
@@ -133,10 +123,11 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 }
 
 /** @CURS **/
-static inline void update_cursx(Editor* ed, u16 pos) { if (!_has(ed->ctrl, st_lock_cursx)) ed->curs.x = pos; }
+static inline void update_cursx(Editor* ed, u16 pos) { if (!_has(ed->ctrl, lock_cursx)) ed->curs.x = pos; }
 
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
+  _set(&ed->ctrl, lock_cursx | commit_action);
   if (times > 0) {
     if (ed->curs.y == 0) return;
     times = MIN(times, ed->curs.y);
@@ -157,8 +148,9 @@ static inline void curs_mov_up(Editor* ed, u16 times) { _curs_mov_vertical(ed, t
 static inline void curs_mov_down(Editor* ed, u16 times) { _curs_mov_vertical(ed, -times); }
 
 static void curs_mov_left(Editor* ed, u32 times) {
+  _set(&ed->ctrl, commit_action);
   while (ed->gap.c > 0 && times > 0) {
-    if (gap_getch(&ed->gap, ed->gap.c - 1) == '\n') ed->curs.y--;
+      if (gap_getch(&ed->gap, ed->gap.c - 1) == '\n') ed->curs.y--;
     gap_left(&ed->gap, 1);
     times--;
   }
@@ -166,6 +158,7 @@ static void curs_mov_left(Editor* ed, u32 times) {
 }
 
 static void curs_mov_right(Editor* ed, u32 times) {
+  _set(&ed->ctrl, commit_action);
   while (ed->gap.c < GAP_LEN(&ed->gap) && times > 0) {
     if (gap_getch(&ed->gap, ed->gap.c) == '\n') ed->curs.y++;
     gap_right(&ed->gap, 1);
@@ -224,8 +217,7 @@ static struct timeline timeline_init() {
   return tl;
 }
 
-void timeline_clear_redo(struct timeline* tl) {
-  if (tl->rtop == STK_EMTY) return;
+static void timeline_redo_free(struct timeline* tl) {
   for (u32 i = 0; i < UNDO_LIMIT; i++) {
     if (tl->redo[i].op != 0) {
       action_free(&tl->redo[i]);
@@ -236,7 +228,7 @@ void timeline_clear_redo(struct timeline* tl) {
 
 static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
   if (_has(ed->ctrl, undoing)) return;
-  if (ed->timeline.rtop != STK_EMTY) timeline_clear_redo(&ed->timeline);
+  if (ed->timeline.rtop != STK_EMTY) timeline_redo_free(&ed->timeline);
   struct action* undo = ed->timeline.undo;
   isize* top = &ed->timeline.utop;
   if (*top == -1 || _has(ed->ctrl, commit_action) || elapsed_seconds(&ed->timeline.time) > UNDO_EXPIRY || op != undo[*top % UNDO_LIMIT].op) {
@@ -249,26 +241,15 @@ static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
 }
 
 void timeline_free(struct timeline* tl) {
-  timeline_clear_redo(tl);
+  timeline_redo_free(tl);
   for (u32 i = 0; i < UNDO_LIMIT; i++) {
-    if (tl->undo[i].op != 0) {
+    if (tl->undo[i].op != op_idle) {
       action_free(&tl->undo[i]);
     }
   }
 }
 
 /** @EDITOR **/
-static void editor_handle_implicit_states(Editor* ed, u32 ch) {
-  _reset(&ed->ctrl, undoing);
-  switch (ch) {
-    case KEY_LEFT:
-    case KEY_RIGHT: _set(&ed->ctrl, commit_action); break;
-    case KEY_UP:
-    case KEY_DOWN: _set(&ed->ctrl, st_lock_cursx | commit_action); return;
-  }
-  _reset(&ed->ctrl, st_lock_cursx);
-}
-
 static Editor* editor_init() {
   Editor* ed = malloc(sizeof(Editor));
   if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
@@ -338,7 +319,15 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
     }
   }
   action->op *= -1;
-  u32Vec_rev(&action->frame);
+
+  // reverse the vector action->frame
+  u32Vec *vec = &action->frame;
+  for (isize i = 0; i < vec->len / 2; i++) {
+    u32 beg_val = u32Vec_get(vec, i);
+    u32 end_val = u32Vec_get(vec, _END(i));
+    u32Vec_set(vec, end_val, i);
+    u32Vec_set(vec, beg_val, _END(i));
+  }
 }
 
 void editor_undo(Editor* ed) {
@@ -407,7 +396,7 @@ void editor_process(WINDOW* edwin) {
   wrefresh(edwin);
   while ((ch = wgetch(edwin)) != CTRL('q')) {
     if (ch != ERR) {
-      editor_handle_implicit_states(ed, ch);
+      _reset(&ed->ctrl, lock_cursx | undoing);
       if (ch >= 32 && ch < 127) { // ascii printable character range
         editor_insertch(ed, ch);
       } else {
