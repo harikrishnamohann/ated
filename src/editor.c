@@ -84,12 +84,14 @@ static inline u32 gapc(Editor* ed) { return ed->gap.c; }
 static inline u32 lnbeg(Editor* ed, u32 lno) { return u32Vec_get(&ed->lines, lno); }
 static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= ed->lines.len - 1) ? GAP_LEN(&ed->gap) : lnbeg(ed, lno + 1) - 1; }
 static inline u32 lnlen(Editor* ed) { return ed->lines.len; }
+static inline u32 lncount(Editor* ed) { return ed->lines.len; }
+
 static inline u32 cursx(Editor* ed) { return gapc(ed) - lnbeg(ed, ed->curs.y); }
 static inline u32 cursy(Editor* ed) { return ed->curs.y; }
 
 // the following 4 operations expects curs before updation.
-static inline void adjust_lines_after_insert(Editor* ed) { for (u32 i = cursy(ed) + 1; i < ed->lines.len; i++) ed->lines._elements[i]++; }
-static inline void adjust_lines_after_remove(Editor* ed) { for (u32 i = cursy(ed) + 1; i < ed->lines.len; i++) ed->lines._elements[i]--; }
+static inline void adjust_lines_after_insert(Editor* ed) { for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) ed->lines._elements[i]++; }
+static inline void adjust_lines_after_remove(Editor* ed) { for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) ed->lines._elements[i]--; }
 static inline void insert_line(Editor* ed) { u32Vec_insert(&ed->lines, gapc(ed), cursy(ed)); }
 static inline void remove_line(Editor* ed) { u32Vec_remove(&ed->lines, cursy(ed)); }
 
@@ -129,8 +131,8 @@ static void _curs_mov_vertical(Editor* ed, i32 times) {
     if (cursy(ed) == 0) return;
     times = MIN(times, cursy(ed));
   } else if (times < 0) {
-    if (cursy(ed) >= ed->lines.len - 1) return;
-    times = (cursy(ed) + -times > ed->lines.len - 1) ? -(ed->lines.len - cursy(ed) - 1) : times;
+    if (cursy(ed) >= lncount(ed) - 1) return;
+    times = (cursy(ed) + -times > lncount(ed) - 1) ? -(lncount(ed) - cursy(ed) - 1) : times;
   }
 
   u32 target_lno = cursy(ed) - times;
@@ -377,7 +379,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     return;
   }
 
-  for (u32 ln = 0; ln < win_h  && ln + ed->view.y < ed->lines.len; ln++) {
+  for (u32 ln = 0; ln < win_h  && ln + ed->view.y < lncount(ed); ln++) {
     u32 len = lnend(ed, ln + ed->view.y) - lnbeg(ed, ln + ed->view.y);
     mvwprintw(edwin, ln, 1, "%5d ", ln + ed->view.y + 1);
 
