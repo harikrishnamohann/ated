@@ -270,7 +270,7 @@ static Editor* editor_init() {
   ed->error = editor_err_handler;
   ed->tl = timeline_init();
 
-  ed->gap = gap_init(GAP_RESIZE_STEP);
+  ed->gap = gap_init(1024);
 
   ed->lines = gap_init(1024);
   gap_insertch(&ed->lines, 0);
@@ -319,7 +319,7 @@ static void editor_removech(Editor* ed) {
 
 static void timeline_invert_action(Editor* ed, struct action* action) {
   if (action->op == op_idle) return;
-
+  
   action->start += action->op * action->frame.len;
   curs_mov(ed, action->start);
   if (action->op == op_ins) {
@@ -375,25 +375,24 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   update_view(ed, win_h, win_w);
 
   werase(edwin);
-  mvwvline(edwin, 0, 0, ACS_VLINE, win_h);
-  mvwprintw(edwin, 0, 1, "%5d  ", ed->view.y + 1);
+  mvwprintw(edwin, 0, 0, "%6d  ", ed->view.y + 1);
 
   if (_has(ed->ctrl, blank)) {
     editor_help(edwin, win_w, win_h);
     return;
   }
 
-  for (u32 ln = 0; ln < win_h  && ln + ed->view.y < lncount(ed); ln++) {
-    u32 len = lnlen(ed, ln + ed->view.y);
-    mvwprintw(edwin, ln, 1, "%5d ", ln + ed->view.y + 1);
-
+  for (u32 y = 0; y < win_h - 1  && y + ed->view.y < lncount(ed); y++) {
+    u32 len = lnlen(ed, y + ed->view.y);
+    mvwprintw(edwin, y, 0, "%6d ", y + ed->view.y + 1);
     for (u16 x = 0; x + ed->view.x < len && x + LNO_PADDING < win_w; x++) {
-      u8 ch = gap_getch(&ed->gap, x + lnbeg(ed, ed->view.y + ln) + ed->view.x);
-      if (ch == '\n') break;
-      if (ch) mvwaddch(edwin, ln, x + LNO_PADDING, ch);
+      u8 ch = gap_getch(&ed->gap, x + lnbeg(ed, ed->view.y + y) + ed->view.x);
+      if (ch) mvwaddch(edwin, y, x + LNO_PADDING, ch);
     }
-    mvwprintw(edwin, ln + 1, 1, "    ~");
+    mvwprintw(edwin, y + 1, 0, "     ~");
   }
+  mvwprintw(edwin, win_h - 1, 0, "delta: %ld curs: %u:%u buf_capacity: %u utop: %ld rtop: %ld",
+            ed->lineDelta, cursy(ed), cursx(ed), ed->gap.capacity, ed->tl.utop, ed->tl.rtop);
   wmove(edwin, DELTA(ed->view.y, cursy(ed)), cursx(ed) + LNO_PADDING - ed->view.x);
 }
 

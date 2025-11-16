@@ -1,13 +1,11 @@
 #pragma once
 
-#include <stdio.h>
+#include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
 #include "itypes.h"
 
-#ifndef GAP_RESIZE_STEP
-#define GAP_RESIZE_STEP 1024
-#endif
+#define _RESIZE_FAC 1.6
 
 // [start]abcd[c]_______________[ce]efg[end]
 typedef struct {
@@ -40,7 +38,6 @@ static GapBuffer gap_init(u32 size) {
     perror("failed to initialize gap buffer.");
     exit(-1);
   }
-  memset(gap.start, 0, size);
   gap.capacity = size;
   gap.ce = gap.end = size - 1;
   return gap;
@@ -56,7 +53,7 @@ static void gap_free(GapBuffer* gap) {
 // grow operation of gap buffer
 static void gap_grow(GapBuffer* gap) {
   isize ce_offset = gap->end - gap->ce;
-  gap->capacity += GAP_RESIZE_STEP;
+  gap->capacity *= _RESIZE_FAC;
   gap->start = (u32*)realloc(gap->start, sizeof(u32) * gap->capacity);
   if (!gap->start) {
     perror("realloc failure");
@@ -64,12 +61,10 @@ static void gap_grow(GapBuffer* gap) {
   }
 
   gap->end = gap->capacity - 1;
-  gap->ce = gap->end - ce_offset;
-  if (gap->end > gap->ce) {  // copy characters after ce to the end if ce < end
-    for (u32 i = 0; i <= ce_offset; i++) {
-      *(gap->start + gap->end - ce_offset + i) = *(gap->start + gap->ce + i); 
-    }
+  if (ce_offset > 0) {
+    memmove(gap->start + gap->end - ce_offset + 1, gap->start + gap->ce + 1, sizeof(u32) * ce_offset);
   }
+  gap->ce = gap->end - ce_offset;
 }
 
 // insert operation of gap buffer.
@@ -126,4 +121,4 @@ static void gap_setch(GapBuffer* gap, u32 logical_index, u32 ch) {
     gap->start[GAP_GET_BUFFER_INDEX(gap, logical_index)] = ch;
 }
 
-#undef GAP_RESIZE_FACTOR
+#undef _RESIZE_FAC
