@@ -7,11 +7,11 @@
 - [x] undo-redo  
 - [x] implement lazy line updation technique and use gap buffer for lines
 - [ ] visual modifiers (selection and ncurses attributes)  
+- [ ] save and load files
 - [ ] status line  
 - [ ] indentation  
 - [ ] command palette  
 - [ ] syntax highlighting  
 - [ ] helix mode  
 - [ ] multiple instances  
-- [ ] make a header file and compile this separately once done
 

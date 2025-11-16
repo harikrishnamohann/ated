@@ -51,26 +51,9 @@ typedef struct {
   GapBuffer lines;
   isize lineDelta;
   err_handler_t error;
-  struct timeline timeline;
-  u32 sticky_offset;
+  struct timeline tl;
+  u32 sticky_curs;
 } Editor;
-
-// @ERRORS
-static enum {
-  editor_err_ok,
-  editor_err_malloc_failure,
-} ederr;
-
-void editor_err_handler(i32 errno, void* args) {
-  switch(errno) {
-    case editor_err_malloc_failure:
-      perror("A memory allocation in editor failed.");
-      endwin();
-      exit(-1);
-    case editor_err_ok:
-      return;
-  }
-}
 
 
 /** @states **/
@@ -101,6 +84,24 @@ static void lncommit(Editor* ed) {
 }
 
 
+// @ERRORS TODO
+static enum {
+  editor_err_ok,
+  editor_err_malloc_failure,
+} ederr;
+
+void editor_err_handler(i32 errno, void* args) {
+  switch(errno) {
+    case editor_err_malloc_failure:
+      perror("A memory allocation in editor failed.");
+      endwin();
+      exit(-1);
+    case editor_err_ok:
+      return;
+  }
+}
+
+
 /** @VIEW **/
 // curs_c must be updated before calling this method
 static void update_view(Editor* ed, u16 win_h, u16 win_w) {
@@ -122,7 +123,7 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 
 
 /** @CURS **/
-static inline void update_cursx(Editor* ed, u32 pos) { if (!_has(ed->ctrl, sticky_scroll)) ed->sticky_offset = pos; }
+static inline void update_sticky_curs(Editor* ed, u32 pos) { if (!_has(ed->ctrl, sticky_scroll)) ed->sticky_curs = pos; }
 
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
@@ -130,18 +131,20 @@ static void _curs_mov_vertical(Editor* ed, i32 times) {
   lncommit(ed);
 
   if (times > 0) {
-    if (cursy(ed) == 0) return;
+    if (cursy(ed) == 0) goto sticky_reset;
     times = MIN(times, cursy(ed));
   } else if (times < 0) {
-    if (cursy(ed) >= lncount(ed) - 1) return;
+    if (cursy(ed) >= lncount(ed) - 1) goto sticky_reset;
     times = (cursy(ed) + -times > lncount(ed) - 1) ? -(lncount(ed) - cursy(ed) - 1) : times;
   }
 
   u32 target_lno = cursy(ed) - times;
   u32 target_len = lnlen(ed, target_lno);
-  u32 target_pos = lnbeg(ed, target_lno) + MIN(ed->sticky_offset, target_len);
+  u32 target_pos = lnbeg(ed, target_lno) + MIN(ed->sticky_curs, target_len);
   gap_move(&ed->gap, target_pos);
   gap_move(&ed->lines, target_lno + 1);
+  sticky_reset:
+  _reset(&ed->ctrl, sticky_scroll);
 }
 
 static inline void curs_mov_up(Editor* ed, u16 times) { _curs_mov_vertical(ed, times); }
@@ -157,7 +160,7 @@ static void curs_mov_left(Editor* ed, u32 times) {
     gap_left(&ed->gap, 1);
     times--;
   }
-  update_cursx(ed, cursx(ed));
+  update_sticky_curs(ed, cursx(ed));
 }
 
 static void curs_mov_right(Editor* ed, u32 times) {
@@ -170,7 +173,7 @@ static void curs_mov_right(Editor* ed, u32 times) {
     gap_right(&ed->gap, 1);
     times--;
   }
-  update_cursx(ed, cursx(ed));
+  update_sticky_curs(ed, cursx(ed));
 }
 
 static void curs_mov(Editor* ed, u32 pos) {
@@ -216,7 +219,7 @@ static inline struct action* action_pop(struct action* stack, isize* top) {
 
 
 /** @TIMELINE **/
-static inline void timeline_fetch_time(Editor* ed) { clock_gettime(CLOCK_MONOTONIC, &ed->timeline.time); }
+static inline void timeline_fetch_time(Editor* ed) { clock_gettime(CLOCK_MONOTONIC, &ed->tl.time); }
 
 static struct timeline timeline_init() {
   struct timeline tl = {0};
@@ -236,11 +239,10 @@ static void timeline_redo_free(struct timeline* tl) {
 }
 
 static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
-  if (_has(ed->ctrl, undoing)) return;
-  if (ed->timeline.rtop != STK_EMTY) timeline_redo_free(&ed->timeline);
-  struct action* undo = ed->timeline.undo;
-  isize* top = &ed->timeline.utop;
-  if (*top == -1 || _has(ed->ctrl, commit_action) || elapsed_seconds(&ed->timeline.time) > UNDO_EXPIRY || op != undo[*top % UNDO_LIMIT].op) {
+  if (ed->tl.rtop != STK_EMTY) timeline_redo_free(&ed->tl);
+  struct action* undo = ed->tl.undo;
+  isize* top = &ed->tl.utop;
+  if (*top == -1 || _has(ed->ctrl, commit_action) || elapsed_seconds(&ed->tl.time) > UNDO_EXPIRY || op != undo[*top % UNDO_LIMIT].op) {
     struct action new = action_init(gapc(ed), op);
     action_push(undo, top, new);
     _reset(&ed->ctrl, commit_action);
@@ -266,7 +268,7 @@ static Editor* editor_init() {
   if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
   *ed = (Editor){0};
   ed->error = editor_err_handler;
-  ed->timeline = timeline_init();
+  ed->tl = timeline_init();
 
   ed->gap = gap_init(GAP_RESIZE_STEP);
 
@@ -280,7 +282,7 @@ static Editor* editor_init() {
 static void editor_free(Editor** ed) {
   gap_free(&(*ed)->lines);
   gap_free(&(*ed)->gap);
-  timeline_free(&(*ed)->timeline);
+  timeline_free(&(*ed)->tl);
 
   **ed = (Editor){0};
   free(*ed);
@@ -288,13 +290,15 @@ static void editor_free(Editor** ed) {
 }
 
 static void editor_insertch(Editor* ed, u32 ch) {
-  if (!_has(ed->ctrl, undoing)) editor_update_timeline(ed, ch, op_ins);
+  if (!_has(ed->ctrl, undoing)) {
+    editor_update_timeline(ed, ch, op_ins);
+  }
   gap_insertch(&ed->gap, ch);
   ed->lineDelta++;
   if (ch == '\n') {
     insert_line(ed);
   }
-  update_cursx(ed, cursx(ed));
+  update_sticky_curs(ed, cursx(ed));
   if (_has(ed->ctrl, blank)) { _reset(&ed->ctrl, blank); }
 }
 
@@ -309,7 +313,7 @@ static void editor_removech(Editor* ed) {
   if (removing_ch == '\n') {
     remove_line(ed);
   }
-  update_cursx(ed, cursx(ed));
+  update_sticky_curs(ed, cursx(ed));
   if (GAP_LEN(&ed->gap) == 0) { _set(&ed->ctrl, blank); }
 }
 
@@ -339,20 +343,24 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
 
 void editor_undo(Editor* ed) {
   _set(&ed->ctrl, undoing);
-  struct action* action = action_pop(ed->timeline.undo, &ed->timeline.utop);
-  if (action == NULL) return;
+  struct action* action = action_pop(ed->tl.undo, &ed->tl.utop);
+  if (action == NULL) goto reset;
   timeline_invert_action(ed, action);
-  action_push(ed->timeline.redo, &ed->timeline.rtop, *action);
+  action_push(ed->tl.redo, &ed->tl.rtop, *action);
   action->op = op_idle;
+  reset:
+    _reset(&ed->ctrl, undoing);
 }
 
 void editor_redo(Editor* ed) {
   _set(&ed->ctrl, undoing);
-  struct action* action = action_pop(ed->timeline.redo, &ed->timeline.rtop);
-  if (action == NULL) return;
+  struct action* action = action_pop(ed->tl.redo, &ed->tl.rtop);
+  if (action == NULL) goto reset;
   timeline_invert_action(ed, action);
-  action_push(ed->timeline.undo, &ed->timeline.utop, *action);
+  action_push(ed->tl.undo, &ed->tl.utop, *action);
   action->op = op_idle;
+  reset:
+    _reset(&ed->ctrl, undoing);
 }
 
 static inline void editor_help(WINDOW* win, u16 w, u16 h) {
@@ -401,7 +409,6 @@ void editor_process(WINDOW* edwin) {
   wrefresh(edwin);
   while ((ch = wgetch(edwin)) != CTRL('q')) {
     if (ch != ERR) {
-      _reset(&ed->ctrl, sticky_scroll | undoing);
       if (ch >= 32 && ch < 127) { // ascii printable character range
         editor_insertch(ed, ch);
       } else {
