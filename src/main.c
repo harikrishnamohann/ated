@@ -9,9 +9,7 @@ i32 main() {
   keypad(stdscr, TRUE);
   cbreak();
 
-  #define H 20
-  #define W 50
-  WINDOW* edwin = newwin(H, W, CENTER(LINES, H), CENTER(COLS, W));
+  WINDOW* edwin = newwin(LINES, COLS, 0, 0);
 
   editor_process(edwin);
 
