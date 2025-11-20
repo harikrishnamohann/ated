@@ -56,6 +56,21 @@ typedef struct {
 } Editor;
 
 
+static inline u8 stop_tab(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS); }
+
+static u32 get_visual_width(Editor* ed, u32 start, u32 end) {
+  u32 width = 0;
+  for (u32 i = start; i < end; i++) {
+    if (gap_getch(&ed->gap, i) == '\t') {
+      width += stop_tab(width);
+    } else {
+      width++;
+    }
+  }
+  return width;
+}
+
+
 /** @states **/
 static inline void _set(enum editor_ctrl* st, enum editor_ctrl set) { *st = *st | set; }
 static inline void _reset(enum editor_ctrl* st, enum editor_ctrl reset) { *st = *st & ~reset; }
@@ -320,30 +335,17 @@ static void editor_insertch(Editor* ed, u32 ch) {
   if (_has(ed->ctrl, blank)) { _reset(&ed->ctrl, blank); }
 }
 
-static void editor_insert_tab(Editor* ed) {
-  u8 nspaces = TAB_STOPS - (cursx(ed) % TAB_STOPS);
-  while (nspaces > 0) {
-    editor_insertch(ed, ' ');
-    nspaces--;
-  }
-}
-
 static void editor_insert_newline(Editor* ed) {
-  u8 indent = 0;  
   u32 i = lnbeg(ed, cursy(ed));
   u32 curs = gapc(ed);
+  editor_insertch(ed, '\n');
   while (i < curs) {
-    if (gap_getch(&ed->gap, i) == ' ') {
-      indent++;
+    if (gap_getch(&ed->gap, i) == '\t') {
+      editor_insertch(ed, '\t');
+      i++;
     } else {
       break;
     }
-    i++;
-  }
-  editor_insertch(ed, '\n');
-  while (indent > 0) {
-    editor_insertch(ed, ' ');
-    indent--;
   }
 }
 
@@ -430,15 +432,18 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   for (u32 y = 0; y < win_h - 1  && y + ed->view.y < lncount(ed); y++) {
     u32 len = lnlen(ed, y + ed->view.y);
     mvwprintw(edwin, y, 0, "%6d ", y + ed->view.y + 1);
-    for (u16 x = 0; x + ed->view.x < len && x + LNO_PADDING < win_w; x++) {
-      u8 ch = gap_getch(&ed->gap, x + lnbeg(ed, ed->view.y + y) + ed->view.x);
+    for (u16 x = 0, i = 0; i + ed->view.x < len && i + LNO_PADDING < win_w; i++) {
+      u8 ch = gap_getch(&ed->gap, i + lnbeg(ed, ed->view.y + y) + ed->view.x);
       mvwaddch(edwin, y, x + LNO_PADDING, ch);
+      x += (ch == '\t') ? stop_tab(x) : 1;
     }
     mvwprintw(edwin, y + 1, 0, "     ~");
   }
   mvwprintw(edwin, win_h - 1, 0, "delta: %ld curs: %u:%u buf_capacity: %u utop: %ld rtop: %ld",
-            ed->lineDelta, cursy(ed), cursx(ed), ed->gap.capacity, ed->tl.utop, ed->tl.rtop);
-  wmove(edwin, DELTA(ed->view.y, cursy(ed)), cursx(ed) + LNO_PADDING - ed->view.x);
+            ed->lineDelta, cursy(ed) + 1, cursx(ed), ed->gap.capacity, ed->tl.utop, ed->tl.rtop);
+  u32 y = DELTA(ed->view.y, cursy(ed));
+  u32 x = get_visual_width(ed, lnbeg(ed, cursy(ed)), gapc(ed)) + LNO_PADDING - ed->view.x;
+  wmove(edwin, y, x);
 }
 
 
@@ -463,7 +468,7 @@ void editor_process(WINDOW* edwin) {
           case KEY_DOWN: curs_mov_down(ed, 1); break;
           case KEY_BACKSPACE: editor_removech(ed); break;
           case '\n': editor_insert_newline(ed); break;
-          case '\t': editor_insert_tab(ed); break;
+          case '\t': editor_insertch(ed, '\t'); break;
           case CTRL('u'): editor_undo(ed); break;
           case CTRL('r'): editor_redo(ed) ;break;
         }
