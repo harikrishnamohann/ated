@@ -11,7 +11,7 @@ VECTOR(u32, u32);
 #define SCROLL_BOUNDRY 4
 #define LNO_PADDING 8
 
-#define TAB_WIDTH 2
+#define TAB_STOPS 4
 
 #define UNDO_LIMIT 1024
 #define UNDO_EXPIRY MSEC(650)
@@ -63,17 +63,34 @@ static inline bool _has(enum editor_ctrl st, enum editor_ctrl has) { return (st 
 
 
 /** @LINES **/
+// line number of cursor
 static inline u32 cursy(Editor* ed) { return ed->lines.c - ((ed->lines.c) ? 1 : 0); }
+
+// total number of lines
 static inline u32 lncount(Editor* ed) { return GAP_LEN(&ed->lines); }
+
+// logical index of gap->c
 static inline u32 gapc(Editor* ed) { return ed->gap.c; }
+
+// start logical index of line lno
 static inline u32 lnbeg(Editor* ed, u32 lno) { return gap_getch(&ed->lines, lno) + (lno > cursy(ed) ? ed->lineDelta : 0); }
+
+// logical index of line end lno
 static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= lncount(ed) - 1) ? GAP_LEN(&ed->gap) : lnbeg(ed, lno + 1) - 1; }
+
+// length of a line
 static inline u32 lnlen(Editor* ed, u32 lno) { return lnend(ed, lno) - lnbeg(ed, lno); }
+
+// cursor offset relative to line start logical index
 static inline u32 cursx(Editor* ed) { return gapc(ed) - lnbeg(ed, cursy(ed)); }
 
+// to insert a line in line component
 static inline void insert_line(Editor* ed) { gap_insertch(&ed->lines, gapc(ed));  }
+
+// to remove current line from lines component
 static inline void remove_line(Editor* ed) { gap_removech(&ed->lines); }
 
+// lazily update lineDelta
 static void lncommit(Editor* ed) {
   if (ed->lineDelta == 0) return;
   for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) {
@@ -104,7 +121,7 @@ void editor_err_handler(i32 errno, void* args) {
 
 /** @VIEW **/
 // curs_c must be updated before calling this method
-static void update_view(Editor* ed, u16 win_h, u16 win_w) {
+static void editor_update_view(Editor* ed, u16 win_h, u16 win_w) {
   while (DELTA(ed->view.y, cursy(ed)) > win_h - SCROLL_BOUNDRY - 1) { // downwards
     ed->view.y++; 
   }
@@ -112,13 +129,14 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
     ed->view.y--; 
   }
   u32 len = lnlen(ed, cursy(ed));
-  u32 pos = cursx(ed);
-  while (ed->view.x < len && pos - ed->view.x >= win_w - LNO_PADDING - SCROLL_BOUNDRY - 1) {// rightwards
-    ed->view.x++; 
+  u32 pos = cursx(ed), viewx = ed->view.x; 
+  while (viewx < len && pos >= viewx + win_w - LNO_PADDING - SCROLL_BOUNDRY) {// rightwards
+    viewx++; 
   }
-  while (ed->view.x > 0 && pos <= ed->view.x + SCROLL_BOUNDRY) {// leftwards
-    ed->view.x--; 
+  while (viewx > 0 && pos <= viewx + SCROLL_BOUNDRY) {// leftwards
+    viewx--; 
   }
+  ed->view.x = viewx;
 }
 
 
@@ -297,9 +315,36 @@ static void editor_insertch(Editor* ed, u32 ch) {
   ed->lineDelta++;
   if (ch == '\n') {
     insert_line(ed);
-  }
+  } 
   update_sticky_curs(ed, cursx(ed));
   if (_has(ed->ctrl, blank)) { _reset(&ed->ctrl, blank); }
+}
+
+static void editor_insert_tab(Editor* ed) {
+  u8 nspaces = TAB_STOPS - (cursx(ed) % TAB_STOPS);
+  while (nspaces > 0) {
+    editor_insertch(ed, ' ');
+    nspaces--;
+  }
+}
+
+static void editor_insert_newline(Editor* ed) {
+  u8 indent = 0;  
+  u32 i = lnbeg(ed, cursy(ed));
+  u32 curs = gapc(ed);
+  while (i < curs) {
+    if (gap_getch(&ed->gap, i) == ' ') {
+      indent++;
+    } else {
+      break;
+    }
+    i++;
+  }
+  editor_insertch(ed, '\n');
+  while (indent > 0) {
+    editor_insertch(ed, ' ');
+    indent--;
+  }
 }
 
 static void editor_removech(Editor* ed) {
@@ -372,7 +417,7 @@ static inline void editor_help(WINDOW* win, u16 w, u16 h) {
 static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 win_h, win_w;
   getmaxyx(edwin, win_h, win_w);
-  update_view(ed, win_h, win_w);
+  editor_update_view(ed, win_h, win_w);
 
   werase(edwin);
   mvwprintw(edwin, 0, 0, "%6d  ", ed->view.y + 1);
@@ -387,7 +432,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     mvwprintw(edwin, y, 0, "%6d ", y + ed->view.y + 1);
     for (u16 x = 0; x + ed->view.x < len && x + LNO_PADDING < win_w; x++) {
       u8 ch = gap_getch(&ed->gap, x + lnbeg(ed, ed->view.y + y) + ed->view.x);
-      if (ch) mvwaddch(edwin, y, x + LNO_PADDING, ch);
+      mvwaddch(edwin, y, x + LNO_PADDING, ch);
     }
     mvwprintw(edwin, y + 1, 0, "     ~");
   }
@@ -417,8 +462,8 @@ void editor_process(WINDOW* edwin) {
           case KEY_UP: curs_mov_up(ed, 1); break;
           case KEY_DOWN: curs_mov_down(ed, 1); break;
           case KEY_BACKSPACE: editor_removech(ed); break;
-          case KEY_ENTER: case '\n': editor_insertch(ed, '\n'); break;
-          case '\t' : editor_insertch(ed, '\t'); break;
+          case '\n': editor_insert_newline(ed); break;
+          case '\t': editor_insert_tab(ed); break;
           case CTRL('u'): editor_undo(ed); break;
           case CTRL('r'): editor_redo(ed) ;break;
         }

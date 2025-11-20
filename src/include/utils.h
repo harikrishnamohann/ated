@@ -7,7 +7,9 @@
 #define CENTER(length, offset) ((((length) - (offset)) / 2))
 
 // to make ctrl + ; key maps more readable
+#ifndef CTRL
 #define CTRL(x) ((x) & 0x1F)
+#endif
 
 static inline u64 ABS(i64 n) { return n < 0 ?  -n : n; }
 static inline i64 DELTA(i64 a, i64 b) { return b - a; }
