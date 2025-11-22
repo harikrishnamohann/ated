@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 SRC="./src/main.c ./src/editor.c"
-TARGET="edy"
+TARGET="ated"
 CC=clang
 CFLAGS="-lncurses -std=gnu17"
 

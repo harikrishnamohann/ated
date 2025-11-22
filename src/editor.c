@@ -12,7 +12,7 @@ VECTOR(u32, u32);
 #define SCROLL_BOUNDRY_PADDED (SCROLL_BOUNDRY + 2)
 #define LNO_PADDING 8
 
-#define TAB_WIDTH 4
+#define TAB_STOPS 8
 
 #define UNDO_LIMIT 1024
 #define UNDO_EXPIRY MSEC(650)
@@ -57,11 +57,14 @@ typedef struct {
 } Editor;
 
 
+// returns the distance to next tab after pos
+static inline u8 next_tab(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS); }
+
 static u32 get_visual_width(Editor* ed, u32 start, u32 end) {
   u32 width = 0;
   for (u32 i = start; i < end; i++) {
     if (gap_getch(&ed->gap, i) == '\t') {
-      width += TAB_WIDTH;
+      width += next_tab(width);
     } else {
       width++;
     }
@@ -429,7 +432,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     for (u16 x = 0, i = 0; i + ed->view.x < len && i + LNO_PADDING < win_w; i++) {
       u8 ch = gap_getch(&ed->gap, i + lnbeg(ed, ed->view.y + y) + ed->view.x);
       mvwaddch(edwin, y, x + LNO_PADDING, ch);
-      x += (ch == '\t') ? TAB_WIDTH : 1;
+      x += (ch == '\t') ? next_tab(x) : 1;
     }
     mvwprintw(edwin, y + 1, 0, "     ~");
   }
