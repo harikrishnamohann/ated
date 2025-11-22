@@ -1,8 +1,14 @@
 #! /usr/bin/env bash
+
+SRC="./src/main.c ./src/editor.c"
+TARGET="edy"
+CC=clang
+CFLAGS="-lncurses -std=gnu17"
+
 if [[ $1 == "debug" ]]; then
-  clang ./src/main.c -lncurses -std=gnu17 -Wall -fsanitize=address -g -o ated
+  $CC $SRC $CFLAGS -Wall -fsanitize=address -g -o $TARGET
 elif [[ $1 == "release" ]]; then
-  clang ./src/main.c -O2 -lncurses -std=gnu17 -o ated
+  $CC $SRC -O2 $CFLAGS -o $TARGET
 else
   echo unknown compilation mode: $1
 fi

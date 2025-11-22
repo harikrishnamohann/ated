@@ -1,6 +1,7 @@
 #include <ncurses.h>
 #include "include/itypes.h"
-#include "editor.c"
+
+extern void editor_process(WINDOW*);
 
 i32 main() {
   initscr();

@@ -11,7 +11,7 @@
 #define CTRL(x) ((x) & 0x1F)
 #endif
 
-static inline u64 ABS(i64 n) { return n < 0 ?  -n : n; }
+static inline u64 ABS(i64 n) { return n < 0 ?  -(n) : n; }
 static inline i64 DELTA(i64 a, i64 b) { return b - a; }
 static inline isize MIN(isize a, isize b) { return a < b ? a : b; }
 static inline isize MAX(isize a, isize b) { return a > b ? a : b; }
