@@ -21,7 +21,33 @@
           echo "-I${pkgs.glibc.dev}/include" > compile_flags.txt
           pkg-config --cflags ncurses | tr ' ' '\n' >> compile_flags.txt
           echo $NIX_CFLAGS_COMPILE | tr ' ' '\n' >> compile_flags.txt
-          exec fish
+          fishConfig="
+            function fish_prompt; set_color green; echo -n \"[ated]\"; set_color normal; echo \" :: \"; end;
+
+            function build
+              set mode \$argv[1]
+              set SRC ./src/main.c ./src/editor.c
+              set TARGET \"ated\"
+              
+              set CFLAGS \"-lncurses\" \"-std=gnu17\"
+
+              if test \"\$mode\" = \"debug\"
+                echo \"[Debug Build]\"
+                clang \$SRC \$CFLAGS -Wall -fsanitize=address -g -o \$TARGET
+              else if test \"\$mode\" = \"release\"
+                echo \"[Release Build]\"
+                clang \$SRC -O2 \$CFLAGS -o \$TARGET
+              else
+                echo \"Usage: build [debug|release]\"
+              end
+            end
+
+            # Shortcuts
+            abbr --add b \"build debug\"
+            abbr --add br \"build release\"
+            abbr --add run ./ated
+          "
+          exec fish -C "$fishConfig"
         '';
       };
     };
