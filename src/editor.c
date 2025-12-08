@@ -48,29 +48,13 @@ enum editor_ctrl {
 typedef struct {
   enum editor_ctrl cw;
   GapBuffer gap;
-  struct { u32 x; u32 y; } view;
+  struct { u32 x; u32 y; } view; // this is visual index. not logical
   GapBuffer lines;
   isize lineDelta;
   err_handler_t error;
   struct timeline tl;
   u32 sticky_curs;
 } Editor;
-
-
-// returns the distance to next tab after pos
-static inline u8 next_tab(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS); }
-
-static u32 get_visual_width(Editor* ed, u32 start, u32 end) {
-  u32 width = 0;
-  for (u32 i = start; i < end; i++) {
-    if (gap_getch(&ed->gap, i) == '\t') {
-      width += next_tab(width);
-    } else {
-      width++;
-    }
-  }
-  return width;
-}
 
 
 /** @states **/
@@ -137,6 +121,40 @@ void editor_err_handler(i32 errno, void* args) {
 
 
 /** @VIEW **/
+// return distance to next tabstop from pos
+static inline u8 tabstop_distance(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS); }
+
+// returns visual length(length with tab character) from start to (i < end)
+static u32 vlen(Editor* ed, u32 start, u32 end) {
+  u32 width = 0;
+  for (u32 i = start; i < end; i++) {
+    if (gap_getch(&ed->gap, i) == '\t') {
+      width += tabstop_distance(width);
+    } else {
+      width++;
+    }
+  }
+  return width;
+}
+
+// visual to logical index relative to lno
+static u32 vtoldx(Editor* ed, u32 lno, u32 vidx) {
+  u32 start = lnbeg(ed, lno);
+  u32 len = lnlen(ed, lno);
+  u32 vi = 0;
+  for (u32 i = 0; i < len; i++) {
+    u32 width = 1;
+    if (gap_getch(&ed->gap, i + start) == '\t') {
+      width = tabstop_distance(vi);
+    }
+    if (vidx >= vi && (vi + width) > vidx) {
+      return i;
+    }
+    vi += width;
+  }
+  return len - 1;
+}
+
 // curs_c must be updated before calling this method
 static void editor_update_view(Editor* ed, i32 win_h, i32 win_w) {
   if (cursy(ed) > ed->view.y + win_h - SCROLL_BOUNDRY_PADDED) {
@@ -144,6 +162,7 @@ static void editor_update_view(Editor* ed, i32 win_h, i32 win_w) {
   } else if (cursy(ed) < ed->view.y + SCROLL_BOUNDRY) {
     ed->view.y = (cursy(ed) < SCROLL_BOUNDRY) ? 0 : cursy(ed) - SCROLL_BOUNDRY;
   }
+  // todo: make view.x visual length and update rendering appropriately
   if (cursx(ed) > ed->view.x + win_w - LNO_PADDING - SCROLL_BOUNDRY_PADDED) {
     ed->view.x += cursx(ed) - (ed->view.x + win_w - LNO_PADDING - SCROLL_BOUNDRY_PADDED);    
   } else if (cursx(ed) < ed->view.x + SCROLL_BOUNDRY) {
@@ -426,20 +445,21 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     return;
   }
 
-  for (u32 y = 0; y < win_h - 1  && y + ed->view.y < lncount(ed); y++) {
-    u32 len = lnlen(ed, y + ed->view.y);
-    mvwprintw(edwin, y, 0, "%6d ", y + ed->view.y + 1);
-    for (u16 x = 0, i = 0; i + ed->view.x < len && i + LNO_PADDING < win_w; i++) {
-      u8 ch = gap_getch(&ed->gap, i + lnbeg(ed, ed->view.y + y) + ed->view.x);
+  u32 vx = ed->view.x, vy = ed->view.y;
+  for (u32 y = 0; y < win_h - 1  && y + vy < lncount(ed); y++) {
+    u32 len = lnlen(ed, y + vy);
+    mvwprintw(edwin, y, 0, "%6d ", y + vy + 1);
+    for (u16 x = 0, i = 0; i + vx < len && i + LNO_PADDING < win_w; i++) {
+      u8 ch = gap_getch(&ed->gap, i + lnbeg(ed, vy + y) + vx);
       mvwaddch(edwin, y, x + LNO_PADDING, ch);
-      x += (ch == '\t') ? next_tab(x) : 1;
+      x += (ch == '\t') ? tabstop_distance(x + vx) : 1;
     }
     mvwprintw(edwin, y + 1, 0, "     ~");
   }
-  mvwprintw(edwin, win_h - 1, 0, "delta: %ld curs: %u:%u buf_capacity: %u utop: %ld rtop: %ld",
-            ed->lineDelta, cursy(ed) + 1, cursx(ed), ed->gap.capacity, ed->tl.utop, ed->tl.rtop);
-  u32 y = DELTA(ed->view.y, cursy(ed));
-  u32 x = get_visual_width(ed, lnbeg(ed, cursy(ed)), gapc(ed)) + LNO_PADDING - ed->view.x;
+  mvwprintw(edwin, win_h - 1, 0, "delta: %ld curs: %u:%u buf_capacity: %u utop: %ld rtop: %ld vtoldx: %u",
+            ed->lineDelta, cursy(ed) + 1, cursx(ed), ed->gap.capacity, ed->tl.utop, ed->tl.rtop, vtoldx(ed, cursy(ed), cursx(ed)));
+  u32 y = DELTA(vy, cursy(ed));
+  u32 x = vlen(ed, lnbeg(ed, cursy(ed)), gapc(ed)) + LNO_PADDING - vx;
   wmove(edwin, y, x);
 }
 
