@@ -1,4 +1,4 @@
- - [x] up and down movements  
+- [x] up and down movements  
 - [x] sticky scrolling  
 - [x] split editor operations into component level  
 - [x] make line updation incremental *(using gap buffer)*  
@@ -6,6 +6,8 @@
 - [x] handle horizontal text overflows  
 - [x] undo-redo  
 - [x] implement lazy line updation technique and use gap buffer for lines
+- [x] tab handling and horizontal rendering
+- [x] del key works
 - [ ] visual modifiers (selection and ncurses attributes)  
 - [ ] save and load files
 - [ ] status line  
@@ -14,4 +16,3 @@
 - [ ] syntax highlighting  
 - [ ] helix mode  
 - [ ] multiple instances  
-

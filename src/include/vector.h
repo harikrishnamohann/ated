@@ -12,7 +12,7 @@
     both specifies the array resize rate
 
   array can be indexed backwords using VEND(n) macro
-  example: <type>Vec_get(&vec, VEND(0)); // returns the last element in array
+  example: <type>Vec_get(&vec, _END(0)); // returns the last element in array
 */
 
 #pragma once

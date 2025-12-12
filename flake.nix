@@ -45,9 +45,9 @@
             # Shortcuts
             abbr --add b \"build debug\"
             abbr --add br \"build release\"
-            abbr --add run ./ated
+            abbr --add run \"build debug && ./ated\"
           "
-          exec fish -C "$fishConfig"
+          exec ${pkgs.fish}/bin/fish -C "$fishConfig"
         '';
       };
     };

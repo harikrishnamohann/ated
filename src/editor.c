@@ -12,7 +12,7 @@ VECTOR(u32, u32);
 #define SCROLL_BOUNDRY_PADDED (SCROLL_BOUNDRY + 2)
 #define LNO_PADDING 8
 
-#define TAB_STOPS 8
+#define TAB_STOPS 4
 
 #define UNDO_LIMIT 1024
 #define UNDO_EXPIRY MSEC(650)
@@ -48,7 +48,10 @@ enum editor_ctrl {
 typedef struct {
   enum editor_ctrl cw;
   GapBuffer gap;
-  struct { u32 x; u32 y; } view; // this is visual index. not logical
+  struct {
+    u32 x;
+    u32 y;
+  } view; // this is visual indices. not logical
   GapBuffer lines;
   isize lineDelta;
   err_handler_t error;
@@ -74,7 +77,7 @@ static inline u32 lncount(Editor* ed) { return GAP_LEN(&ed->lines); }
 static inline u32 gapc(Editor* ed) { return ed->gap.c; }
 
 // start logical index of line lno
-static inline u32 lnbeg(Editor* ed, u32 lno) { return gap_getch(&ed->lines, lno) + (lno > cursy(ed) ? ed->lineDelta : 0); }
+static inline u32 lnbeg(Editor* ed, u32 lno) { return gap_get(&ed->lines, lno) + (lno > cursy(ed) ? ed->lineDelta : 0); }
 
 // logical index of line end lno
 static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= lncount(ed) - 1) ? GAP_LEN(&ed->gap) : lnbeg(ed, lno + 1) - 1; }
@@ -85,18 +88,12 @@ static inline u32 lnlen(Editor* ed, u32 lno) { return lnend(ed, lno) - lnbeg(ed,
 // cursor offset relative to line start
 static inline u32 cursx(Editor* ed) { return gapc(ed) - lnbeg(ed, cursy(ed)); }
 
-// to insert a line in line component
-static inline void insert_line(Editor* ed) { gap_insertch(&ed->lines, gapc(ed));  }
-
-// to remove current line from lines component
-static inline void remove_line(Editor* ed) { gap_removech(&ed->lines); }
-
 // lazily update lineDelta
 static void lncommit(Editor* ed) {
   if (ed->lineDelta == 0) return;
   for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) {
-    u32 changes = gap_getch(&ed->lines, i) + ed->lineDelta;
-    gap_setch(&ed->lines, i, changes);
+    u32 changes = gap_get(&ed->lines, i) + ed->lineDelta;
+    gap_set(&ed->lines, i, changes);
   }
   ed->lineDelta = 0;
 }
@@ -116,57 +113,6 @@ void editor_err_handler(i32 errno, void* args) {
       exit(-1);
     case editor_err_ok:
       return;
-  }
-}
-
-
-/** @VIEW **/
-// return distance to next tabstop from pos
-static inline u8 tabstop_distance(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS); }
-
-// returns visual length(length with tab character) from start to (i < end)
-static u32 vlen(Editor* ed, u32 start, u32 end) {
-  u32 width = 0;
-  for (u32 i = start; i < end; i++) {
-    if (gap_getch(&ed->gap, i) == '\t') {
-      width += tabstop_distance(width);
-    } else {
-      width++;
-    }
-  }
-  return width;
-}
-
-// visual to logical index relative to lno
-static u32 vtoldx(Editor* ed, u32 lno, u32 vidx) {
-  u32 start = lnbeg(ed, lno);
-  u32 len = lnlen(ed, lno);
-  u32 vi = 0;
-  for (u32 i = 0; i < len; i++) {
-    u32 width = 1;
-    if (gap_getch(&ed->gap, i + start) == '\t') {
-      width = tabstop_distance(vi);
-    }
-    if (vidx >= vi && (vi + width) > vidx) {
-      return i;
-    }
-    vi += width;
-  }
-  return len - 1;
-}
-
-// curs_c must be updated before calling this method
-static void editor_update_view(Editor* ed, i32 win_h, i32 win_w) {
-  if (cursy(ed) > ed->view.y + win_h - SCROLL_BOUNDRY_PADDED) {
-    ed->view.y += cursy(ed) - (ed->view.y + win_h - SCROLL_BOUNDRY_PADDED);
-  } else if (cursy(ed) < ed->view.y + SCROLL_BOUNDRY) {
-    ed->view.y = (cursy(ed) < SCROLL_BOUNDRY) ? 0 : cursy(ed) - SCROLL_BOUNDRY;
-  }
-  // todo: make view.x visual length and update rendering appropriately
-  if (cursx(ed) > ed->view.x + win_w - LNO_PADDING - SCROLL_BOUNDRY_PADDED) {
-    ed->view.x += cursx(ed) - (ed->view.x + win_w - LNO_PADDING - SCROLL_BOUNDRY_PADDED);    
-  } else if (cursx(ed) < ed->view.x + SCROLL_BOUNDRY) {
-    ed->view.x = (cursx(ed) < SCROLL_BOUNDRY) ? 0 : cursx(ed) - SCROLL_BOUNDRY;
   }
 }
 
@@ -202,7 +148,7 @@ static inline void curs_mov_down(Editor* ed, u16 times) { _curs_mov_vertical(ed,
 static void curs_mov_left(Editor* ed, u32 times) {
   _set(&ed->cw, commit_action);
   while (gapc(ed) > 0 && times > 0) {
-    if (gap_getch(&ed->gap, gapc(ed) - 1) == '\n') {
+    if (gap_get(&ed->gap, gapc(ed) - 1) == '\n') {
       lncommit(ed);
       gap_left(&ed->lines, 1);
     }
@@ -215,7 +161,7 @@ static void curs_mov_left(Editor* ed, u32 times) {
 static void curs_mov_right(Editor* ed, u32 times) {
   _set(&ed->cw, commit_action);
   while (gapc(ed) < GAP_LEN(&ed->gap) && times > 0) {
-    if (gap_getch(&ed->gap, gapc(ed)) == '\n') {
+    if (gap_get(&ed->gap, gapc(ed)) == '\n') {
       lncommit(ed);
       gap_right(&ed->lines, 1);
     }
@@ -322,7 +268,7 @@ static Editor* editor_init() {
   ed->gap = gap_init(1024);
 
   ed->lines = gap_init(1024);
-  gap_insertch(&ed->lines, 0);
+  gap_insert(&ed->lines, 0);
 
   _set(&ed->cw, blank);
   return ed;
@@ -338,14 +284,14 @@ static void editor_free(Editor** ed) {
   *ed = NULL;
 }
 
-static void editor_insertch(Editor* ed, u32 ch) {
+static void editor_insert(Editor* ed, u32 ch) {
   if (!_has(ed->cw, undoing)) {
     editor_update_timeline(ed, ch, op_ins);
   }
-  gap_insertch(&ed->gap, ch);
+  gap_insert(&ed->gap, ch);
   ed->lineDelta++;
   if (ch == '\n') {
-    insert_line(ed);
+    gap_insert(&ed->lines, gapc(ed));
   } 
   update_sticky_curs(ed, cursx(ed));
   if (_has(ed->cw, blank)) { _reset(&ed->cw, blank); }
@@ -354,10 +300,10 @@ static void editor_insertch(Editor* ed, u32 ch) {
 static void editor_insert_newline(Editor* ed) {
   u32 i = lnbeg(ed, cursy(ed));
   u32 curs = gapc(ed);
-  editor_insertch(ed, '\n');
+  editor_insert(ed, '\n');
   while (i < curs) {
-    if (gap_getch(&ed->gap, i) == '\t') {
-      editor_insertch(ed, '\t');
+    if (gap_get(&ed->gap, i) == '\t') {
+      editor_insert(ed, '\t');
       i++;
     } else {
       break;
@@ -365,16 +311,31 @@ static void editor_insert_newline(Editor* ed) {
   }
 }
 
-static void editor_removech(Editor* ed) {
-  u32 removing_ch = gap_getch(&ed->gap, gapc(ed) - 1);
+static void editor_removel(Editor* ed) {
+  u32 removing_ch = gap_get(&ed->gap, gapc(ed) - 1);
   if ((u8)removing_ch == 0) return;
   if (!_has(ed->cw, undoing)) {
     editor_update_timeline(ed, removing_ch, op_del);
   }
-  gap_removech(&ed->gap);
+  gap_removel(&ed->gap);
   ed->lineDelta--;
   if (removing_ch == '\n') {
-    remove_line(ed);
+    gap_removel(&ed->lines);
+  }
+  update_sticky_curs(ed, cursx(ed));
+  if (GAP_LEN(&ed->gap) == 0) { _set(&ed->cw, blank); }
+}
+
+static void editor_remover(Editor* ed) {
+  u32 removing_ch = gap_get(&ed->gap, gapc(ed));
+  if ((u8)removing_ch == 0) return;
+  if (!_has(ed->cw, undoing)) {
+    editor_update_timeline(ed, removing_ch, op_del);
+  }
+  gap_remover(&ed->gap);
+  ed->lineDelta--;
+  if (removing_ch == '\n') {
+    gap_remover(&ed->lines);
   }
   update_sticky_curs(ed, cursx(ed));
   if (GAP_LEN(&ed->gap) == 0) { _set(&ed->cw, blank); }
@@ -386,10 +347,10 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
   action->start += action->op * action->frame.len;
   curs_mov(ed, action->start);
   if (action->op == op_ins) {
-    for (isize i = 0; i < action->frame.len; i++) editor_removech(ed);
+    for (isize i = 0; i < action->frame.len; i++) editor_removel(ed);
   } else if (action->op == op_del) {
     for (isize i = 0; i < action->frame.len; i++) {
-      editor_insertch(ed, u32Vec_get(&action->frame, _END(i)));
+      editor_insert(ed, u32Vec_get(&action->frame, _END(i)));
     }
   }
   action->op *= -1;
@@ -427,42 +388,90 @@ void editor_redo(Editor* ed) {
 }
 
 static inline void editor_help(WINDOW* win, u16 w, u16 h) {
-  char* msg = "ctrl + q to quit.";
+  char* msg = "ctrl + q to quit";
   mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s", msg);
   wmove(win, 0, LNO_PADDING);
 }
 
+/** @VIEW **/
+// return distance to next tabstop from pos
+static inline u8 tabstop_distance(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS); }
+
+// returns visual length(length with tab character) from start to (i < end)
+static u32 vlen(Editor* ed, u32 start, u32 end) {
+  u32 width = 0;
+  for (u32 i = start; i < end; i++) {
+    if (gap_get(&ed->gap, i) == '\t') {
+      width += tabstop_distance(width);
+    } else {
+      width++;
+    }
+  }
+  return width;
+}
+
+
 static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 win_h, win_w;
   getmaxyx(edwin, win_h, win_w);
-  editor_update_view(ed, win_h, win_w);
+  u16 content_w = win_w - LNO_PADDING;
+
+  // updating view.y
+  if (cursy(ed) > ed->view.y + win_h - SCROLL_BOUNDRY_PADDED) {
+    ed->view.y += cursy(ed) - (ed->view.y + win_h - SCROLL_BOUNDRY_PADDED);
+  } else if (cursy(ed) < ed->view.y + SCROLL_BOUNDRY) {
+    ed->view.y = (cursy(ed) < SCROLL_BOUNDRY) ? 0 : cursy(ed) - SCROLL_BOUNDRY;
+  }
+
+  // updating view.x
+  u32 cur_vx = vlen(ed, lnbeg(ed, cursy(ed)), gapc(ed)); // find visual cursx position
+  if (cur_vx >= ed->view.x + content_w - SCROLL_BOUNDRY) {
+    ed->view.x = cur_vx - (content_w - SCROLL_BOUNDRY); // right
+  } else if (cur_vx < ed->view.x + SCROLL_BOUNDRY) {
+    ed->view.x = (cur_vx < SCROLL_BOUNDRY) ? 0 : cur_vx - SCROLL_BOUNDRY; // left
+  }
 
   werase(edwin);
-  mvwprintw(edwin, 0, 0, "%6d  ", ed->view.y + 1);
+  mvwprintw(edwin, 0, 0, "%6d ", ed->view.y + 1);
 
   if (_has(ed->cw, blank)) {
     editor_help(edwin, win_w, win_h);
     return;
   }
 
-  u32 vx = ed->view.x, vy = ed->view.y;
-  for (u32 y = 0; y < win_h - 1  && y + vy < lncount(ed); y++) {
-    u32 len = lnlen(ed, y + vy);
-    mvwprintw(edwin, y, 0, "%6d ", y + vy + 1);
-    for (u16 x = 0, i = 0; i + vx < len && i + LNO_PADDING < win_w; i++) {
-      u8 ch = gap_getch(&ed->gap, i + lnbeg(ed, vy + y) + vx);
-      mvwaddch(edwin, y, x + LNO_PADDING, ch);
-      x += (ch == '\t') ? tabstop_distance(x + vx) : 1;
-    }
-    mvwprintw(edwin, y + 1, 0, "     ~");
-  }
-  mvwprintw(edwin, win_h - 1, 0, "delta: %ld curs: %u:%u buf_capacity: %u utop: %ld rtop: %ld vtoldx: %u",
-            ed->lineDelta, cursy(ed) + 1, cursx(ed), ed->gap.capacity, ed->tl.utop, ed->tl.rtop, vtoldx(ed, cursy(ed), cursx(ed)));
-  u32 y = DELTA(vy, cursy(ed));
-  u32 x = vlen(ed, lnbeg(ed, cursy(ed)), gapc(ed)) + LNO_PADDING - vx;
-  wmove(edwin, y, x);
-}
+  for (u32 vy = 0; vy < win_h - 1 && vy + ed->view.y < lncount(ed); vy++) {
+    u32 line_idx = vy + ed->view.y;
+    u32 start = lnbeg(ed, line_idx);
+    u32 len = lnlen(ed, line_idx);
+    
+    mvwprintw(edwin, vy, 0, "%6d ", line_idx + 1);
 
+    for (u32 i = 0, vx = 0; i < len; i++) {
+      u32 ch = gap_get(&ed->gap, start + i);
+      u16 char_width = (ch == '\t') ? tabstop_distance(vx) : 1;
+
+      if (vx + char_width > ed->view.x && vx < ed->view.x + content_w) {
+        u32 screen_x = vx + LNO_PADDING - ed->view.x;
+        if (ch == '\t') {
+          for (u32 k = 0; k < char_width; k++) {
+             if (vx + k >= ed->view.x && screen_x + k < win_w) {
+                 mvwaddch(edwin, vy, screen_x + k, ' ');
+             }
+          }
+        } else if (screen_x < win_w) {
+          mvwaddch(edwin, vy, screen_x, ch);
+        }
+      }
+      vx += char_width;
+    }
+    mvwprintw(edwin, vy + 1, 0, "      ~");
+  }
+
+  u16 cy = DELTA(ed->view.y, cursy(ed));
+  u16 cx = cur_vx - ed->view.x + LNO_PADDING;
+  
+  wmove(edwin, cy, cx);
+}
 
 
 /** @ENTRY_POINT **/
@@ -476,16 +485,17 @@ void editor_process(WINDOW* edwin) {
   while ((ch = wgetch(edwin)) != CTRL('q')) {
     if (ch != ERR) {
       if (ch >= 32 && ch < 127) { // ascii printable character range
-        editor_insertch(ed, ch);
+        editor_insert(ed, ch);
       } else {
         switch (ch) {
           case KEY_LEFT: curs_mov_left(ed, 1); break;
           case KEY_RIGHT: curs_mov_right(ed, 1); break;
           case KEY_UP: curs_mov_up(ed, 1); break;
           case KEY_DOWN: curs_mov_down(ed, 1); break;
-          case KEY_BACKSPACE: editor_removech(ed); break;
+          case KEY_BACKSPACE: editor_removel(ed); break;
+          case KEY_DC: editor_remover(ed); break;
           case '\n': editor_insert_newline(ed); break;
-          case '\t': editor_insertch(ed, '\t'); break;
+          case '\t': editor_insert(ed, '\t'); break;
           case CTRL('u'): editor_undo(ed); break;
           case CTRL('r'): editor_redo(ed) ;break;
         }

@@ -68,7 +68,7 @@ static void gap_grow(GapBuffer* gap) {
 }
 
 // insert operation of gap buffer.
-static void gap_insertch(GapBuffer* gap, u32 ch) {
+static void gap_insert(GapBuffer* gap, u32 ch) {
   if (gap->c >= gap->ce) {
     gap_grow(gap);
   }
@@ -76,8 +76,11 @@ static void gap_insertch(GapBuffer* gap, u32 ch) {
   gap->c++;
 }
 
-// remove operation
-static void gap_removech(GapBuffer* gap) { if (gap->c > 0) gap->c--; }
+// remove from left operation
+static void gap_removel(GapBuffer* gap) { if (gap->c > 0) gap->c--; }
+
+// remove from right operation
+static void gap_remover(GapBuffer* gap) { if (gap->ce < gap->end) gap->ce++; }
 
 // moves the gap max `n_ch` times to the left
 static void gap_left(GapBuffer* gap, u32 times) {
@@ -109,14 +112,14 @@ static void gap_move(GapBuffer* gap, u32 pos) {
 }
 
 // access the gap buffer using logical_indexing
-static u32 gap_getch(const GapBuffer* gap, u32 logical_index) {
+static u32 gap_get(const GapBuffer* gap, u32 logical_index) {
   if (logical_index < GAP_LEN(gap))
     return gap->start[GAP_GET_BUFFER_INDEX(gap, logical_index)];
   return 0;
 }
 
 // modify ch at index
-static void gap_setch(GapBuffer* gap, u32 logical_index, u32 ch) {
+static void gap_set(GapBuffer* gap, u32 logical_index, u32 ch) {
   if (logical_index < GAP_LEN(gap))
     gap->start[GAP_GET_BUFFER_INDEX(gap, logical_index)] = ch;
 }
