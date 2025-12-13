@@ -77,10 +77,7 @@ static void gap_insert(GapBuffer* gap, u32 ch) {
 }
 
 // remove from left operation
-static void gap_removel(GapBuffer* gap) { if (gap->c > 0) gap->c--; }
-
-// remove from right operation
-static void gap_remover(GapBuffer* gap) { if (gap->ce < gap->end) gap->ce++; }
+static void gap_remove(GapBuffer* gap) { if (gap->c > 0) gap->c--; }
 
 // moves the gap max `n_ch` times to the left
 static void gap_left(GapBuffer* gap, u32 times) {

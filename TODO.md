@@ -8,6 +8,8 @@
 - [x] implement lazy line updation technique and use gap buffer for lines
 - [x] tab handling and horizontal rendering
 - [x] del key works
+- [x] auto pair insetion
+- [ ] auto newline to matching pairs
 - [ ] visual modifiers (selection and ncurses attributes)  
 - [ ] save and load files
 - [ ] status line  
