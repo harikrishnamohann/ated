@@ -10,7 +10,6 @@
 VECTOR(u32, u32);
 
 #define SCROLL_BOUNDRY 5
-#define SCROLL_BOUNDRY_PADDED (SCROLL_BOUNDRY + 2)
 #define LNO_PADDING 8
 
 #define TAB_STOPS 4
@@ -44,7 +43,7 @@ enum editor_ctrl {
   blank = 0x2, // indicates the editor text buffer is empty
   undoing = 0x4, // editor is performing an undo or redo operation
   commit_action = 0x8, // to force commit current timeline to undo
-  pairing = 0x10
+  pairing = 0x10 // to handle pairing characters
 };
 
 typedef struct {
@@ -122,7 +121,11 @@ void editor_err_handler(i32 errno, void* args) {
 
 
 /** @CURS **/
-static inline void update_sticky_curs(Editor* ed, u32 pos) { if (!_has(ed->states, sticky_scroll)) ed->sticky_curs = pos; }
+static inline void update_sticky_curs(Editor* ed) {
+  if (!_has(ed->states, sticky_scroll)) {
+    ed->sticky_curs = cursx(ed);
+  }
+}
 
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
@@ -160,7 +163,7 @@ static void curs_mov_left(Editor* ed, u32 times) {
     gap_left(&ed->buffer, 1);
     times--;
   }
-  update_sticky_curs(ed, cursx(ed));
+  update_sticky_curs(ed);
 }
 
 static void curs_mov_right(Editor* ed, u32 times) {
@@ -173,7 +176,7 @@ static void curs_mov_right(Editor* ed, u32 times) {
     gap_right(&ed->buffer, 1);
     times--;
   }
-  update_sticky_curs(ed, cursx(ed));
+  update_sticky_curs(ed);
 }
 
 static void curs_mov(Editor* ed, u32 pos) {
@@ -356,7 +359,7 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   if (new_ch == '\n') { // handling lines
     gap_insert(&ed->lines, gapc(ed));
   } 
-  update_sticky_curs(ed, cursx(ed));
+  update_sticky_curs(ed);
   // update blank state on insertion
   if (_has(ed->states, blank)) {
     u32Vec_reset(&ed->pair_stack);
@@ -381,7 +384,7 @@ static void editor_insert_newline(Editor* ed) {
   u32 prev_ch = gap_get(&ed->buffer, curs - 1);
   u32 curr_ch = gap_get(&ed->buffer, curs);
   editor_insert(ed, '\n');
-  while (i < curs) {
+  while (i < curs) { // indenting current line with same level as previous line
     if (gap_get(&ed->buffer, i) == '\t') {
       editor_insert(ed, '\t');
       i++;
@@ -389,26 +392,22 @@ static void editor_insert_newline(Editor* ed) {
       break;
     }
   }
-  // should rethink this when an lsp is implemented
   // automatic line insertion for auto pairs
   if (prev_ch == get_pair(curr_ch)) {
     editor_insert_newline(ed);
     curs_mov_up(ed, 1);
     editor_insert(ed, '\t');
-  }
-  // for languages like python or gdscript
-  if (prev_ch == ':') {
+  } else if (is_open_pair(prev_ch)) {
+    editor_insert(ed, '\t');
+  } else if (prev_ch == ':') { // for python like langs
     editor_insert(ed, '\t');
   }
 }
 
-typedef enum { right, left } CursRemPos;
-
-static void editor_remove(Editor* ed, CursRemPos pos) {
-  if (pos == right) { curs_mov_right(ed, 1); }
+static void editor_removel(Editor* ed) {
   u32 removing_ch = gap_get(&ed->buffer, gapc(ed) - 1);
   if (is_open_pair(removing_ch) && gap_get(&ed->buffer, gapc(ed)) == get_pair(removing_ch)) {
-    editor_remove(ed, right); 
+    editor_removel(ed); 
   }
   if ((u8)removing_ch == 0) return;
   if (!_has(ed->states, undoing)) {
@@ -419,8 +418,13 @@ static void editor_remove(Editor* ed, CursRemPos pos) {
   if (removing_ch == '\n') {
     gap_remove(&ed->lines);
   }
-  update_sticky_curs(ed, cursx(ed));
+  update_sticky_curs(ed);
   if (GAP_LEN(&ed->buffer) == 0) { _set(&ed->states, blank); }
+}
+
+static void editor_remover(Editor* ed) {
+  curs_mov_right(ed, 1);
+  editor_removel(ed);
 }
 
 static void timeline_invert_action(Editor* ed, struct action* action) {
@@ -429,7 +433,9 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
   action->start += action->op * action->frame.len;
   curs_mov(ed, action->start);
   if (action->op == op_ins) {
-    for (isize i = 0; i < action->frame.len; i++) editor_remove(ed, left);
+    for (isize i = 0; i < action->frame.len; i++) {
+      editor_removel(ed);
+    }
   } else if (action->op == op_del) {
     for (isize i = 0; i < action->frame.len; i++) {
       editor_insert(ed, u32Vec_get(&action->frame, _END(i)));
@@ -498,8 +504,8 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 content_w = win_w - LNO_PADDING;
 
   // updating view.y
-  if (cursy(ed) > ed->view.y + win_h - SCROLL_BOUNDRY_PADDED) {
-    ed->view.y += cursy(ed) - (ed->view.y + win_h - SCROLL_BOUNDRY_PADDED);
+  if (cursy(ed) > ed->view.y + win_h - SCROLL_BOUNDRY) {
+    ed->view.y += cursy(ed) - (ed->view.y + win_h - SCROLL_BOUNDRY);
   } else if (cursy(ed) < ed->view.y + SCROLL_BOUNDRY) {
     ed->view.y = (cursy(ed) < SCROLL_BOUNDRY) ? 0 : cursy(ed) - SCROLL_BOUNDRY;
   }
@@ -573,8 +579,8 @@ void editor_process(WINDOW* edwin) {
           case KEY_RIGHT: curs_mov_right(ed, 1); break;
           case KEY_UP: curs_mov_up(ed, 1); break;
           case KEY_DOWN: curs_mov_down(ed, 1); break;
-          case KEY_BACKSPACE: editor_remove(ed, left); break;
-          case KEY_DC: editor_remove(ed, right); break;
+          case KEY_BACKSPACE: editor_removel(ed); break;
+          case KEY_DC: editor_remover(ed); break;
           case '\n': editor_insert_newline(ed); break;
           case '\t': editor_insert(ed, '\t'); break;
           case CTRL('u'): editor_undo(ed); break;

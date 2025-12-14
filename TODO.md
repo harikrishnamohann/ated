@@ -9,9 +9,10 @@
 - [x] tab handling and horizontal rendering
 - [x] del key works
 - [x] auto pair insetion
-- [ ] auto newline to matching pairs
-- [ ] visual modifiers (selection and ncurses attributes)  
+- [x] auto newline to matching pairs
+- [ ] ensure correctness of sticky cursor with line indentation
 - [ ] save and load files
+- [ ] visual modifiers (selection and ncurses attributes)  
 - [ ] status line  
 - [ ] indentation  
 - [ ] command palette  
