@@ -127,6 +127,7 @@ static inline void update_sticky_curs(Editor* ed, u32 pos) { if (!_has(ed->state
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
   _set(&ed->states, sticky_scroll | commit_action);
+  u32Vec_reset(&ed->pair_stack);
   lncommit(ed);
 
   if (times > 0) {
@@ -322,12 +323,6 @@ u32 get_pair(u32 ch) {
     case '(': return ')';
     case '[': return ']';
     case '{': return '}';
-    default: return ch;
-  }
-}
-
-u32 get_pair_rev(u32 ch) {
-  switch (ch) {
     case ')': return '(';
     case ']': return '[';
     case '}': return '{';
@@ -335,6 +330,7 @@ u32 get_pair_rev(u32 ch) {
   }
 }
 
+// stack operations for Editor.pair_stack
 static inline void push_pair(Editor* ed, u32 ch) { u32Vec_insert(&ed->pair_stack, ch, _END(0)); }
 static inline u32 peek_pair(Editor* ed) { return u32Vec_get(&ed->pair_stack, _END(0)); }
 static inline u32 pop_pair(Editor* ed) { return u32Vec_remove(&ed->pair_stack, _END(0)); }
@@ -342,8 +338,10 @@ static inline bool is_empty_pair_stk(Editor* ed) { return ed->pair_stack.len == 
 
 static void editor_insert(Editor* ed, u32 new_ch) {
   u32 prev_ch = gap_get(&ed->buffer, gapc(ed) - 1);
+  u32 curr_ch = gap_get(&ed->buffer, gapc(ed));
+  // skip closing pair if exists
   if (!_has_any(ed->states, pairing | undoing) && is_closing_pair(new_ch) && !is_empty_pair_stk(ed)) {
-    if (get_pair_rev(new_ch) == peek_pair(ed)) {
+    if (curr_ch == new_ch && get_pair(new_ch) == peek_pair(ed)) {
       curs_mov_right(ed, 1);
       pop_pair(ed);
       return;
@@ -352,19 +350,21 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   if (!_has(ed->states, undoing)) {
     editor_update_timeline(ed, new_ch, op_ins);
   }
+  // insertion of newch into buffer
   gap_insert(&ed->buffer, new_ch);
   ed->lineDelta++;
-  if (new_ch == '\n') {
+  if (new_ch == '\n') { // handling lines
     gap_insert(&ed->lines, gapc(ed));
   } 
   update_sticky_curs(ed, cursx(ed));
-
+  // update blank state on insertion
   if (_has(ed->states, blank)) {
     u32Vec_reset(&ed->pair_stack);
     _reset(&ed->states, blank);
   }
+  // pair insertion
   if (is_open_pair(new_ch) && !_has_any(ed->states, undoing | pairing)) {
-    if (new_ch == '\'' || new_ch == '"' || new_ch == '`') { // don't wanna pair quotes if it is followed by an alphabet
+    if (new_ch == '\'' || new_ch == '"' || new_ch == '`') { // refuse to pair quotes followed by alphabet
       if (isalpha(prev_ch)) return;
     }
     _set(&ed->states, pairing);
@@ -378,6 +378,8 @@ static void editor_insert(Editor* ed, u32 new_ch) {
 static void editor_insert_newline(Editor* ed) {
   u32 i = lnbeg(ed, cursy(ed));
   u32 curs = gapc(ed);
+  u32 prev_ch = gap_get(&ed->buffer, curs - 1);
+  u32 curr_ch = gap_get(&ed->buffer, curs);
   editor_insert(ed, '\n');
   while (i < curs) {
     if (gap_get(&ed->buffer, i) == '\t') {
@@ -386,6 +388,17 @@ static void editor_insert_newline(Editor* ed) {
     } else {
       break;
     }
+  }
+  // should rethink this when an lsp is implemented
+  // automatic line insertion for auto pairs
+  if (prev_ch == get_pair(curr_ch)) {
+    editor_insert_newline(ed);
+    curs_mov_up(ed, 1);
+    editor_insert(ed, '\t');
+  }
+  // for languages like python or gdscript
+  if (prev_ch == ':') {
+    editor_insert(ed, '\t');
   }
 }
 
