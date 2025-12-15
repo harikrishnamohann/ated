@@ -387,13 +387,9 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   }
 }
 
-static void editor_insert_newline(Editor* ed) {
-  u32 i = lnbeg(ed, cursy(ed));
-  u32 curs = cursi(ed);
-  u32 prev_ch = gap_get(&ed->buffer, curs - 1);
-  u32 curr_ch = gap_get(&ed->buffer, curs);
-  editor_insert(ed, '\n');
-  while (i < curs) { // indenting current line with same level as previous line
+static void indent_from_prevln(Editor* ed) {
+  u32 i = lnbeg(ed, cursy(ed) - 1);
+  while (i < cursi(ed)) { // indenting current line with same level as previous line
     if (gap_get(&ed->buffer, i) == '\t') {
       editor_insert(ed, '\t');
       i++;
@@ -401,11 +397,19 @@ static void editor_insert_newline(Editor* ed) {
       break;
     }
   }
+}
+
+static void editor_insert_newline(Editor* ed) {
+  u32 prev_ch = gap_get(&ed->buffer, cursi(ed) - 1);
+  u32 curr_ch = gap_get(&ed->buffer, cursi(ed));
+  editor_insert(ed, '\n');
+  indent_from_prevln(ed);
   // automatic line insertion for auto pairs
   if (prev_ch == get_pair(curr_ch)) {
-    editor_insert_newline(ed);
-    curs_mov_up(ed, 1);
-    editor_insert(ed, '\t');
+    editor_insert(ed, '\n'); // (\n\n)
+    indent_from_prevln(ed); // \t\t ... (\n\t\t\n)
+    curs_mov_up(ed, 1); // (\n^\n)
+    editor_insert(ed, '\t'); // (\n\t\n)
   } else if (is_open_pair(prev_ch)) {
     editor_insert(ed, '\t');
   } else if (prev_ch == ':') { // for python like langs
@@ -415,15 +419,23 @@ static void editor_insert_newline(Editor* ed) {
 
 static void editor_removel(Editor* ed) {
   u32 removing_ch = gap_get(&ed->buffer, cursi(ed) - 1);
-  if (is_open_pair(removing_ch) && gap_get(&ed->buffer, cursi(ed)) == get_pair(removing_ch)) {
-    editor_removel(ed); 
-  }
   if ((u8)removing_ch == 0) return;
-  if (!_has(ed->states, undoing)) {
-    editor_update_timeline(ed, removing_ch, op_del);
+
+  u8 chars_to_remove = 1;
+  if (is_open_pair(removing_ch) && gap_get(&ed->buffer, cursi(ed)) == get_pair(removing_ch)) {
+    curs_mov_right(ed, 1);
+    chars_to_remove = 2;
   }
-  gap_remove(&ed->buffer);
-  ed->lineDelta--;
+
+  while (chars_to_remove > 0) {
+    removing_ch = gap_get(&ed->buffer, cursi(ed) - 1);
+    if (!_has(ed->states, undoing)) {
+      editor_update_timeline(ed, removing_ch, op_del);
+    }
+    gap_remove(&ed->buffer);
+    ed->lineDelta--;
+    chars_to_remove--;
+  }
   if (removing_ch == '\n') {
     gap_remove(&ed->lines);
   }
