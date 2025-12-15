@@ -26,6 +26,7 @@ static inline f32 elapsed_seconds(struct timespec* since) {
 #define SEC(s) (s)
 #define MSEC(ms) ((f32)(ms) / 1000.0)
 
+#define BYTE(n) (n)
 #define KB(n) ((n) * 1024ULL)
 #define MB(n) ((n) * 1024ULL * 1024ULL)
 #define GB(n) ((n) * 1024ULL * 1024ULL * 1024ULL)
