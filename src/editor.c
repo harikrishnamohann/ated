@@ -421,20 +421,20 @@ static void editor_removel(Editor* ed) {
   u32 removing_ch = gap_get(&ed->buffer, cursi(ed) - 1);
   if ((u8)removing_ch == 0) return;
 
-  u8 chars_to_remove = 1;
+  u8 removal_weight = 1;
   if (is_open_pair(removing_ch) && gap_get(&ed->buffer, cursi(ed)) == get_pair(removing_ch)) {
     curs_mov_right(ed, 1);
-    chars_to_remove = 2;
+    removal_weight = 2;
   }
 
-  while (chars_to_remove > 0) {
-    removing_ch = gap_get(&ed->buffer, cursi(ed) - 1);
+  while (removal_weight > 0) {
+    u32 ch = gap_get(&ed->buffer, cursi(ed) - 1);
     if (!_has(ed->states, undoing)) {
-      editor_update_timeline(ed, removing_ch, op_del);
+      editor_update_timeline(ed, ch, op_del);
     }
     gap_remove(&ed->buffer);
     ed->lineDelta--;
-    chars_to_remove--;
+    removal_weight--;
   }
   if (removing_ch == '\n') {
     gap_remove(&ed->lines);
