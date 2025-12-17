@@ -342,6 +342,8 @@ u32 get_pair(u32 ch) {
   }
 }
 
+static inline bool is_quote(u32 ch) { return ch == '\'' || ch == '"' || ch == '`'; }
+
 // stack operations for Editor.pair_stack
 static inline void push_pair(Editor* ed, u32 ch) { u32Vec_insert(&ed->pair_stack, ch, _END(0)); }
 static inline u32 peek_pair(Editor* ed) { return u32Vec_get(&ed->pair_stack, _END(0)); }
@@ -376,8 +378,8 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   }
   // pair insertion
   if (is_open_pair(new_ch) && !_has_any(ed->states, undoing | pairing)) {
-    if (new_ch == '\'' || new_ch == '"' || new_ch == '`') { // refuse to pair quotes followed by alphabet
-      if (isalpha(prev_ch)) return;
+    if (is_quote(new_ch) && isalpha(prev_ch)) { // refuse to pair quotes followed by alphabet
+      return;
     }
     _set(&ed->states, pairing);
     push_pair(ed, new_ch);
@@ -405,12 +407,12 @@ static void editor_insert_newline(Editor* ed) {
   editor_insert(ed, '\n');
   indent_from_prevln(ed);
   // automatic line insertion for auto pairs
-  if (prev_ch == get_pair(curr_ch)) {
+  if (is_open_pair(prev_ch) && curr_ch == get_pair(prev_ch)) {
     editor_insert(ed, '\n'); // (\n\n)
     indent_from_prevln(ed); // \t\t ... (\n\t\t\n)
     curs_mov_up(ed, 1); // (\n^\n)
     editor_insert(ed, '\t'); // (\n\t\n)
-  } else if (is_open_pair(prev_ch)) {
+  } else if (!is_quote(prev_ch) && is_open_pair(prev_ch)) {
     editor_insert(ed, '\t');
   } else if (prev_ch == ':') { // for python like langs
     editor_insert(ed, '\t');
