@@ -26,7 +26,7 @@
 
             function build
               set mode \$argv[1]
-              set SRC ./src/main.c ./src/editor.c
+              set SRC ./src/main.c
               set TARGET \"ated\"
               
               set CFLAGS \"-lncurses\" \"-std=gnu17\"

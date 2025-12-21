@@ -1,13 +1,15 @@
 #include <ctype.h>
+#include <stdlib.h>
 #include <time.h>
 #include <ncurses.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "include/utils.h"
 #include "include/itypes.h"
 #include "include/gap.h"
 #include "include/err.h"
-#include "include/vector.h"
-
-VECTOR(u32, u32);
+#include "include/u32Da.h"
 
 #define SCROLL_BOUNDRY 5
 #define LNO_PADDING 8
@@ -17,6 +19,8 @@ VECTOR(u32, u32);
 #define UNDO_LIMIT 1024
 #define UNDO_EXPIRY MSEC(650)
 #define STK_EMTY -1
+#define FILE_NAME_LEN 128
+#define DEFAULT_BUF_NAME "textfile.txt"
 
 enum timeline_op { op_idle = 0, op_ins = 1, op_del = -1 };
 #define DEFAULT_ACTION_FRAME_SIZ BYTE(32)
@@ -24,7 +28,7 @@ enum timeline_op { op_idle = 0, op_ins = 1, op_del = -1 };
 struct action {
   enum timeline_op op;
   u32 start;
-  u32Vec frame;
+  u32Da frame;
 };
 
 struct timeline {
@@ -35,35 +39,39 @@ struct timeline {
   isize rtop;
 };
 
-enum editor_ctrl {
+enum states {
   sticky_scroll = 0x1, // prevent writing to editor.curs.x for sticky cursor behaviour
   blank = 0x2, // indicates the editor text buffer is empty
   undoing = 0x4, // editor is performing an undo or redo operation
   commit_action = 0x8, // to force commit current timeline to undo
-  pairing = 0x10 // to handle pairing characters
+  pairing = 0x10, // to handle pairing characters
+  dirty_view = 0x20, // for updating syntax higlights only when view pointer changes
+  lock_writing = 0x40, // to block features such as pairing when reading from a file
 };
 
 typedef struct {
-  enum editor_ctrl states;
+  enum states states;
   GapBuffer buffer;
   struct {
     u32 x;
     u32 y;
   } view; // this is visual indices. not logical
   GapBuffer lines;
-  isize lineDelta;
+  isize line_delta;
   err_handler_t error;
   struct timeline tl;
   u32 sticky_curs;
-  u32Vec pair_stack;
+  u32Da pair_stack;
+  FILE* fp;
+  char filepath[FILE_NAME_LEN];
 } Editor;
 
 
 /** @states **/
-static inline void _set(enum editor_ctrl* st, enum editor_ctrl set) { *st = *st | set; }
-static inline void _reset(enum editor_ctrl* st, enum editor_ctrl reset) { *st = *st & ~reset; }
-static inline bool _has(enum editor_ctrl st, enum editor_ctrl has) { return (st & has) == has; }
-static inline bool _has_any(enum editor_ctrl st, enum editor_ctrl has) { return (st & has) != 0; }
+static inline void _set(enum states* st, enum states set) { *st = *st | set; }
+static inline void _reset(enum states* st, enum states reset) { *st = *st & ~reset; }
+static inline bool _has(enum states st, enum states has) { return (st & has) == has; }
+static inline bool _has_any(enum states st, enum states has) { return (st & has) != 0; }
 
 
 /** @LINES **/
@@ -77,7 +85,7 @@ static inline u32 lncount(Editor* ed) { return GAP_LEN(&ed->lines); }
 static inline u32 cursi(Editor* ed) { return ed->buffer.c; }
 
 // start logical index of given line lno
-static inline u32 lnbeg(Editor* ed, u32 lno) { return gap_get(&ed->lines, lno) + (lno > cursy(ed) ? ed->lineDelta : 0); }
+static inline u32 lnbeg(Editor* ed, u32 lno) { return gap_get(&ed->lines, lno) + (lno > cursy(ed) ? ed->line_delta : 0); }
 
 // logical index of line end lno
 static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= lncount(ed) - 1) ? GAP_LEN(&ed->buffer) : lnbeg(ed, lno + 1) - 1; }
@@ -90,12 +98,12 @@ static inline u32 cursx(Editor* ed) { return cursi(ed) - lnbeg(ed, cursy(ed)); }
 
 // lazily update lineDelta
 static void lncommit(Editor* ed) {
-  if (ed->lineDelta == 0) return;
+  if (ed->line_delta == 0) return;
   for (u32 i = cursy(ed) + 1; i < lncount(ed); i++) {
-    u32 changes = gap_get(&ed->lines, i) + ed->lineDelta;
+    u32 changes = gap_get(&ed->lines, i) + ed->line_delta;
     gap_set(&ed->lines, i, changes);
   }
-  ed->lineDelta = 0;
+  ed->line_delta = 0;
 }
 
 
@@ -127,7 +135,7 @@ static inline void update_sticky_curs(Editor* ed) {
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
   _set(&ed->states, sticky_scroll | commit_action);
-  u32Vec_reset(&ed->pair_stack);
+  u32Da_reset(&ed->pair_stack);
   lncommit(ed);
 
   if (times > 0) {
@@ -197,14 +205,14 @@ static void curs_mov(Editor* ed, u32 pos) {
 // inorder to create a action frame, the trace field should be recorded initially
 static inline struct action action_init(u32 start, enum timeline_op op) {
   return (struct action) {
-    .frame = u32Vec_init(DEFAULT_ACTION_FRAME_SIZ, NULL),
+    .frame = u32Da_init(DEFAULT_ACTION_FRAME_SIZ, NULL),
     .op = op,
     .start = start,
   };
 }
 
 static inline void action_free(struct action* action) {
-  u32Vec_free(&action->frame);
+  u32Da_free(&action->frame);
   *action = (struct action){0};
 }
 
@@ -259,7 +267,7 @@ static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
     action_push(undo, top, new);
     _reset(&ed->states, commit_action);
   }
-  u32Vec_insert(&undo[*top % UNDO_LIMIT].frame, ch, _END(0));
+  u32Da_insert(&undo[*top % UNDO_LIMIT].frame, ch, _END(0));
   timeline_fetch_time(ed);
 }
 
@@ -273,38 +281,7 @@ void timeline_free(struct timeline* tl) {
 }
 
 
-
-/** @EDITOR **/
-static Editor* editor_init() {
-  Editor* ed = malloc(sizeof(Editor));
-  if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
-  *ed = (Editor){0};
-  ed->error = editor_err_handler;
-  ed->tl = timeline_init();
-
-  ed->buffer = gap_init(1024);
-
-  ed->lines = gap_init(1024);
-  gap_insert(&ed->lines, 0);
-
-  ed->pair_stack = u32Vec_init(16, NULL);
-
-  _set(&ed->states, blank);
-  return ed;
-}
-
-static void editor_free(Editor** ed) {
-  gap_free(&(*ed)->lines);
-  gap_free(&(*ed)->buffer);
-  timeline_free(&(*ed)->tl);
-  u32Vec_free(&(*ed)->pair_stack);
-
-  **ed = (Editor){0};
-  free(*ed);
-  *ed = NULL;
-}
-
-bool is_open_pair(u32 ch) {
+bool _is_open_pair(u32 ch) {
   switch (ch) {
     case '(' :
     case '[' :
@@ -317,7 +294,7 @@ bool is_open_pair(u32 ch) {
   }
 }
 
-bool is_closing_pair(u32 ch) {
+bool _is_closing_pair(u32 ch) {
   switch (ch) {
     case ')' :
     case ']' :
@@ -345,16 +322,16 @@ u32 get_pair(u32 ch) {
 static inline bool is_quote(u32 ch) { return ch == '\'' || ch == '"' || ch == '`'; }
 
 // stack operations for Editor.pair_stack
-static inline void push_pair(Editor* ed, u32 ch) { u32Vec_insert(&ed->pair_stack, ch, _END(0)); }
-static inline u32 peek_pair(Editor* ed) { return u32Vec_get(&ed->pair_stack, _END(0)); }
-static inline u32 pop_pair(Editor* ed) { return u32Vec_remove(&ed->pair_stack, _END(0)); }
-static inline bool is_empty_pair_stk(Editor* ed) { return ed->pair_stack.len == 0; }
+static inline void push_pair(Editor* ed, u32 ch) { u32Da_insert(&ed->pair_stack, ch, _END(0)); }
+static inline u32 peek_pair(Editor* ed) { return u32Da_get(&ed->pair_stack, _END(0)); }
+static inline u32 pop_pair(Editor* ed) { return u32Da_remove(&ed->pair_stack, _END(0)); }
+static inline bool _is_empty_pair_stk(Editor* ed) { return ed->pair_stack.len == 0; }
 
 static void editor_insert(Editor* ed, u32 new_ch) {
   u32 prev_ch = gap_get(&ed->buffer, cursi(ed) - 1);
   u32 curr_ch = gap_get(&ed->buffer, cursi(ed));
   // skip closing pair if exists
-  if (!_has_any(ed->states, pairing | undoing) && is_closing_pair(new_ch) && !is_empty_pair_stk(ed)) {
+  if (!_has_any(ed->states, pairing | undoing) && _is_closing_pair(new_ch) && !_is_empty_pair_stk(ed)) {
     if (curr_ch == new_ch && get_pair(new_ch) == peek_pair(ed)) {
       curs_mov_right(ed, 1);
       pop_pair(ed);
@@ -366,18 +343,18 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   }
   // insertion of newch into buffer
   gap_insert(&ed->buffer, new_ch);
-  ed->lineDelta++;
+  ed->line_delta++;
   if (new_ch == '\n') { // handling lines
     gap_insert(&ed->lines, cursi(ed));
   } 
   update_sticky_curs(ed);
   // update blank state on insertion
   if (_has(ed->states, blank)) {
-    u32Vec_reset(&ed->pair_stack);
+    u32Da_reset(&ed->pair_stack);
     _reset(&ed->states, blank);
   }
   // pair insertion
-  if (is_open_pair(new_ch) && !_has_any(ed->states, undoing | pairing)) {
+  if (_is_open_pair(new_ch) && !_has_any(ed->states, undoing | pairing | lock_writing)) {
     if (is_quote(new_ch) && isalpha(prev_ch)) { // refuse to pair quotes followed by alphabet
       return;
     }
@@ -407,12 +384,12 @@ static void editor_insert_newline(Editor* ed) {
   editor_insert(ed, '\n');
   indent_from_prevln(ed);
   // automatic line insertion for auto pairs
-  if (is_open_pair(prev_ch) && curr_ch == get_pair(prev_ch)) {
+  if (_is_open_pair(prev_ch) && curr_ch == get_pair(prev_ch)) {
     editor_insert(ed, '\n'); // (\n\n)
     indent_from_prevln(ed); // \t\t ... (\n\t\t\n)
     curs_mov_up(ed, 1); // (\n^\n)
     editor_insert(ed, '\t'); // (\n\t\n)
-  } else if (!is_quote(prev_ch) && is_open_pair(prev_ch)) {
+  } else if (!is_quote(prev_ch) && _is_open_pair(prev_ch)) {
     editor_insert(ed, '\t');
   } else if (prev_ch == ':') { // for python like langs
     editor_insert(ed, '\t');
@@ -424,7 +401,7 @@ static void editor_removel(Editor* ed) {
   if ((u8)removing_ch == 0) return;
 
   u8 removal_weight = 1;
-  if (is_open_pair(removing_ch) && gap_get(&ed->buffer, cursi(ed)) == get_pair(removing_ch)) {
+  if (_is_open_pair(removing_ch) && gap_get(&ed->buffer, cursi(ed)) == get_pair(removing_ch)) {
     curs_mov_right(ed, 1);
     removal_weight = 2;
   }
@@ -435,7 +412,7 @@ static void editor_removel(Editor* ed) {
       editor_update_timeline(ed, ch, op_del);
     }
     gap_remove(&ed->buffer);
-    ed->lineDelta--;
+    ed->line_delta--;
     removal_weight--;
   }
   if (removing_ch == '\n') {
@@ -461,18 +438,18 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
     }
   } else if (action->op == op_del) {
     for (isize i = 0; i < action->frame.len; i++) {
-      editor_insert(ed, u32Vec_get(&action->frame, _END(i)));
+      editor_insert(ed, u32Da_get(&action->frame, _END(i)));
     }
   }
   action->op *= -1;
 
   // reverse the vector action->frame
-  u32Vec *vec = &action->frame;
+  u32Da *vec = &action->frame;
   for (isize i = 0; i < vec->len / 2; i++) {
-    u32 beg_val = u32Vec_get(vec, i);
-    u32 end_val = u32Vec_get(vec, _END(i));
-    u32Vec_set(vec, end_val, i);
-    u32Vec_set(vec, beg_val, _END(i));
+    u32 beg_val = u32Da_get(vec, i);
+    u32 end_val = u32Da_get(vec, _END(i));
+    u32Da_set(vec, end_val, i);
+    u32Da_set(vec, beg_val, _END(i));
   }
 }
 
@@ -498,9 +475,9 @@ void editor_redo(Editor* ed) {
     _reset(&ed->states, undoing);
 }
 
-static inline void editor_help(WINDOW* win, u16 w, u16 h) {
+static inline void editor_display_help(Editor* ed, WINDOW* win, u16 w, u16 h) {
   char* msg = "ctrl + q to quit";
-  mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s", msg);
+  mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s\n%s", msg, ed->filepath);
   wmove(win, 0, LNO_PADDING);
 }
 
@@ -523,32 +500,120 @@ static u32 vlen(Editor* ed, u32 start, u32 end) {
 
 static void update_view(Editor* ed, u16 win_h, u16 win_w) {
   // updating view.y
-  const u32 scroll_down_threshold = ed->view.y + win_h - SCROLL_BOUNDRY;
+  u32 vy = ed->view.y, vx = ed->view.x;
+  const u32 scroll_down_threshold = vy + win_h - SCROLL_BOUNDRY;
   if (cursy(ed) > scroll_down_threshold) {
-    ed->view.y += cursy(ed) - scroll_down_threshold; // scroll down
-  } else if (cursy(ed) < ed->view.y + SCROLL_BOUNDRY) {
+    vy += cursy(ed) - scroll_down_threshold; // scroll down
+  } else if (cursy(ed) < vy + SCROLL_BOUNDRY) {
     if (cursy(ed) < SCROLL_BOUNDRY) { // scroll up
-      ed->view.y = 0;
+      vy = 0;
     } else {
-      ed->view.y = cursy(ed) - SCROLL_BOUNDRY;
+      vy = cursy(ed) - SCROLL_BOUNDRY;
     }
   }
 
   // updating view.x
   const u16 content_w = win_w - LNO_PADDING;
   const u32 visual_cursx = vlen(ed, lnbeg(ed, cursy(ed)), cursi(ed)); // find visual cursx position
-  const u32 scroll_right_threshold = ed->view.x + content_w - SCROLL_BOUNDRY;
+  const u32 scroll_right_threshold = vx + content_w - SCROLL_BOUNDRY;
 
   if (visual_cursx >= scroll_right_threshold) {
-    ed->view.x = visual_cursx - (content_w - SCROLL_BOUNDRY); // right
-  } else if (visual_cursx < ed->view.x + SCROLL_BOUNDRY) {
+    vx = visual_cursx - (content_w - SCROLL_BOUNDRY); // right
+  } else if (visual_cursx < vx + SCROLL_BOUNDRY) {
     if (visual_cursx < SCROLL_BOUNDRY) { // left
-     ed->view.x = 0;
+     vx = 0;
     } else {
-      ed->view.x = visual_cursx - SCROLL_BOUNDRY;
+      vx = visual_cursx - SCROLL_BOUNDRY;
     }
   }
+  if (vx != ed->view.x || vy != ed->view.y) {
+    _set(&ed->states, dirty_view);
+  }
+  ed->view.y = vy;
+  ed->view.x = vx;
 }
+
+
+// @FILE_HANDLING
+
+static void _open_default_file(Editor* ed) {
+  strcpy(ed->filepath, DEFAULT_BUF_NAME);
+  ed->fp = fopen(DEFAULT_BUF_NAME, "w+");
+}
+
+static void open_file(Editor* ed, char* filepath) {
+  _set(&ed->states, lock_writing);
+  if (filepath == NULL) {
+    _open_default_file(ed);
+  } else {
+    struct stat st;
+    if (stat(filepath, &st) == 0) {
+      if (S_ISDIR(st.st_mode)) {
+
+        // directory TODO
+        
+      } else {
+        strcpy(ed->filepath, filepath);
+        ed->fp = fopen(filepath, "r+");
+        if (ed->fp == NULL) {
+          perror("fopen");
+          exit(EXIT_FAILURE);
+        }
+        i8 ch;
+        while ((ch = fgetc(ed->fp)) != EOF) {
+          editor_insert(ed, ch);
+        }
+      }
+    } else {
+      strcpy(ed->filepath, filepath);
+      ed->fp = fopen(filepath, "w+");
+      if (ed->fp == NULL) {
+        perror("fopen");
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
+  _reset(&ed->states, lock_writing);
+}
+
+static void editor_write_file(Editor* ed) {
+  rewind(ed->fp);
+  u32 i = 0, ch;
+  while ((ch = gap_get(&ed->buffer, i++))) {
+    fputc(ch, ed->fp);
+  }
+}
+
+static Editor* editor_init(char* filepath) {
+  Editor* ed = malloc(sizeof(Editor));
+  if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
+  *ed = (Editor){0};
+  ed->error = editor_err_handler;
+  ed->tl = timeline_init();
+
+  ed->buffer = gap_init(1024);
+
+  ed->lines = gap_init(1024);
+  gap_insert(&ed->lines, 0);
+
+  ed->pair_stack = u32Da_init(16, NULL);
+
+  _set(&ed->states, blank);
+  open_file(ed, filepath);
+  return ed;
+}
+
+static void editor_free(Editor** ed) {
+  gap_free(&(*ed)->lines);
+  gap_free(&(*ed)->buffer);
+  timeline_free(&(*ed)->tl);
+  u32Da_free(&(*ed)->pair_stack);
+
+  **ed = (Editor){0};
+  free(*ed);
+  *ed = NULL;
+}
+
 
 static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 win_h, win_w;
@@ -557,7 +622,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   mvwprintw(edwin, 0, 0, "%6d ", ed->view.y + 1);
 
   if (_has(ed->states, blank)) {
-    editor_help(edwin, win_w, win_h);
+    editor_display_help(ed, edwin, win_w, win_h);
     return;
   }
 
@@ -597,39 +662,5 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
   
   wmove(edwin, cy, cx);
-}
-
-
-/** @ENTRY_POINT **/
-void editor_process(WINDOW* edwin) {
-  Editor *ed = editor_init();
-  keypad(edwin, TRUE);
-
-  u32 ch;
-  editor_draw(edwin, ed);
-  wrefresh(edwin);
-  while ((ch = wgetch(edwin)) != CTRL('q')) {
-    if (ch != ERR) {
-      if (ch >= 32 && ch < 127) { // ascii printable character range
-        editor_insert(ed, ch);
-      } else {
-        switch (ch) {
-          case KEY_LEFT: curs_mov_left(ed, 1); break;
-          case KEY_RIGHT: curs_mov_right(ed, 1); break;
-          case KEY_UP: curs_mov_up(ed, 1); break;
-          case KEY_DOWN: curs_mov_down(ed, 1); break;
-          case KEY_BACKSPACE: editor_removel(ed); break;
-          case KEY_DC: editor_remover(ed); break;
-          case '\n': editor_insert_newline(ed); break;
-          case '\t': editor_insert(ed, '\t'); break;
-          case CTRL('u'): editor_undo(ed); break;
-          case CTRL('r'): editor_redo(ed) ;break;
-        }
-      }
-      editor_draw(edwin, ed);
-    }
-    wrefresh(edwin);
-  }
-
-  editor_free(&ed);
+  _reset(&ed->states, dirty_view);
 }

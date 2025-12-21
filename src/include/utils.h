@@ -16,6 +16,18 @@ static inline i64 DELTA(i64 a, i64 b) { return b - a; }
 static inline isize MIN(isize a, isize b) { return a < b ? a : b; }
 static inline isize MAX(isize a, isize b) { return a > b ? a : b; }
 
+// can be used when you need to limit x between a min and max value (inclusive)
+static i64 clamp(i64 x, i64 min, i64 max) {
+  if (min > max) {
+    max ^= min;
+    min ^= max;
+    max ^= min;
+  }
+  if (x < min) x = min;
+  else if (x > max) x = max;
+  return x;
+}
+
 // current_time and prev_time should be of type: struct timespec
 static inline f32 elapsed_seconds(struct timespec* since) {
   struct timespec curr;
