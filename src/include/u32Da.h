@@ -3,42 +3,25 @@
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
-#include "err.h"
+#include <error.h>
+#include <errno.h>
 #include "itypes.h"
 
 #define GROWTH_FAC 1.5
 #define __SET_REALLOC_SIZE(capacity) ((capacity) = (capacity) * GROWTH_FAC)
-
 #define _END(i) (-((i) + 1))
-
-enum {
-  __daerr_malloc_failure,
-  __daerr_index_out_of_bounds,
-  __daerr_value_uninitialized,
-};
-
-static void __default_err_handler(int err, void* args) {
-  switch(err) {
-    case __daerr_malloc_failure: perror("memory allocation for dynamic arr failed"); exit(-1);
-    case __daerr_index_out_of_bounds : fprintf(stderr, "err! can't reach an out of bound index from a dynamic arr\n"); exit(1);
-    case __daerr_value_uninitialized : fprintf(stderr, "err! can't access values from an empty dynamic arr\n"); exit(1);
-
-  }
-}
 
 typedef struct u32Da {
   u32* _elements;
   usize _capacity;
   usize len;
-  err_handler_t error;
 } u32Da;
 
 static void __u32Da_grow(u32Da* da) {
   __SET_REALLOC_SIZE(da->_capacity);
   u32* new_elements = realloc(da->_elements, sizeof(u32) * da->_capacity);
   if (new_elements == NULL) {
-    da->error(__daerr_malloc_failure, NULL);
-    return;
+    error(EXIT_FAILURE, errno,  "failed to grow _elements");
   }
   da->_elements = new_elements;
 }
@@ -47,8 +30,7 @@ static void __u32Da_grow(u32Da* da) {
 static void u32Da_insert(u32Da* da, u32 val, isize pos) { 
   usize i = pos < 0 ? da->len + pos + 1 : pos; 
   if (i > da->len) {
-    da->error(__daerr_index_out_of_bounds, NULL);
-    return;
+    error(EXIT_FAILURE, errno, "Da_insert:index out of bounds");
   }
   if (da->len >= da->_capacity) __u32Da_grow(da); 
   memmove(&da->_elements[i + 1], &da->_elements[i], sizeof(u32) * (da->len - i)); 
@@ -59,13 +41,10 @@ static void u32Da_insert(u32Da* da, u32 val, isize pos) {
 /// Removes and returns value at position (supports negative indexing).
 static u32 u32Da_remove(u32Da* da, isize pos) { 
   if (da->len == 0) {
-    da->error(__daerr_value_uninitialized, NULL);
-    return (u32){0};
   }
   usize i = pos < 0 ? da->len + pos: pos; 
   if (i >= da->len) {
-    da->error(__daerr_index_out_of_bounds, NULL);
-    return (u32){0};
+    error(EXIT_FAILURE, errno, "u32Da_remove: index out of bounds");
   }
   u32 val = da->_elements[i]; 
   memmove(&da->_elements[i], &da->_elements[i + 1], sizeof(u32) * (da->len - i - 1)); 
@@ -77,12 +56,10 @@ static u32 u32Da_remove(u32Da* da, isize pos) {
 static u32 u32Da_get(const u32Da* da, isize pos) { 
   usize i = pos < 0 ? da->len + pos: pos; 
   if (da->len == 0) {
-    da->error(__daerr_value_uninitialized, NULL);
-    return (u32){0};
+    error(EXIT_FAILURE, errno, "u32Da_get: can't access values from empty array");
   }
   if (i >= da->len) {
-    da->error(__daerr_index_out_of_bounds, NULL);
-    return (u32){0};
+    error(EXIT_FAILURE, errno, "u32Da_get: index out of bounds");
   }
   return da->_elements[i]; 
 }
@@ -91,12 +68,10 @@ static u32 u32Da_get(const u32Da* da, isize pos) {
 static void u32Da_set(u32Da* da, u32 val, isize pos) {
   usize i = pos < 0 ? da->len + pos: pos;
   if (da->len == 0) {
-    da->error(__daerr_value_uninitialized, NULL);
-    return;
+    error(EXIT_FAILURE, errno, "u32Da_set: value uninitialized");
   }
   if (i >= da->len) {
-    da->error(__daerr_index_out_of_bounds, NULL);
-    return;
+    error(EXIT_FAILURE, errno, "u32Da_set: index out of bounds");
   }
   da->_elements[i] = val;
 }
@@ -108,13 +83,12 @@ static void u32Da_free(u32Da* arr) {
 }
 
 /// Initializes a new dynamic array with given capacity and error handler.
-static u32Da u32Da_init(usize capacity, err_handler_t func) {
+static u32Da u32Da_init(usize capacity) {
   u32Da da = {
     ._elements = malloc(sizeof(u32) * capacity),
     ._capacity = capacity,
     .len = 0,
   };
-  da.error = (func) ? func : __default_err_handler;
   if (da._elements == NULL) {
     fprintf(stderr, "failed to initialize dynamic arr\n");
     exit(-1);

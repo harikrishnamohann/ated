@@ -4,6 +4,8 @@
 #include <ncurses.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
+#include <error.h>
 
 #include "include/utils.h"
 #include "include/itypes.h"
@@ -11,19 +13,21 @@
 #include "include/u32Da.h"
 
 #define SCROLL_BOUNDRY 5
-#define LNO_PADDING 8
-
 #define TAB_STOPS 4
 
-#define UNDO_LIMIT 1024
-#define INIT_BUFFER_SIZE 1024
-#define UNDO_EXPIRY MSEC(650)
-#define STK_EMTY -1
 #define FILE_NAME_MAXLEN 128
 #define DEFAULT_FILE_NAME "text.txt"
+#define INIT_BUFFER_SIZE 1024
+
+#define UNDO_LIMIT 1024
+#define UNDO_EXPIRY MSEC(650)
+#define STK_EMTY -1
 
 enum timeline_op { op_idle = 0, op_ins = 1, op_del = -1 };
 #define DEFAULT_ACTION_FRAME_SIZ BYTE(32)
+
+#define LNO_PADDING 8
+#define PAIR_STK_SIZE 16
 
 struct action {
   enum timeline_op op;
@@ -63,7 +67,7 @@ typedef struct {
   u32 sticky_curs;
   u32Da pair_stack;
   FILE* fp;
-  char filepath[FILE_NAME_MAXLEN];
+  char name[FILE_NAME_MAXLEN];
 } Editor;
 
 
@@ -85,10 +89,14 @@ static inline u32 lncount(Editor* ed) { return GAP_LEN(&ed->lines); }
 static inline u32 cursi(Editor* ed) { return ed->buffer.c; }
 
 // start logical index of given line lno
-static inline u32 lnbeg(Editor* ed, u32 lno) { return gap_get(&ed->lines, lno) + (lno > cursy(ed) ? ed->line_delta : 0); }
+static inline u32 lnbeg(Editor* ed, u32 lno) {
+  return gap_get(&ed->lines, lno) + (lno > cursy(ed) ? ed->line_delta : 0);
+}
 
 // logical index of line end lno
-static inline u32 lnend(Editor* ed, u32 lno) { return (lno >= lncount(ed) - 1) ? GAP_LEN(&ed->buffer) : lnbeg(ed, lno + 1) - 1; }
+static inline u32 lnend(Editor* ed, u32 lno) {
+  return (lno >= lncount(ed) - 1) ? GAP_LEN(&ed->buffer) : lnbeg(ed, lno + 1) - 1;
+}
 
 // length of a line
 static inline u32 lnlen(Editor* ed, u32 lno) { return lnend(ed, lno) - lnbeg(ed, lno); }
@@ -187,7 +195,7 @@ static void curs_mov(Editor* ed, u32 pos) {
 // inorder to create a action frame, the trace field should be recorded initially
 static inline struct action action_init(u32 start, enum timeline_op op) {
   return (struct action) {
-    .frame = u32Da_init(DEFAULT_ACTION_FRAME_SIZ, NULL),
+    .frame = u32Da_init(DEFAULT_ACTION_FRAME_SIZ),
     .op = op,
     .start = start,
   };
@@ -465,7 +473,7 @@ void editor_redo(Editor* ed) {
 
 static inline void editor_display_help(Editor* ed, WINDOW* win, u16 w, u16 h) {
   char* msg = "ctrl + q to quit";
-  mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s\n%s", msg, ed->filepath);
+  mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s\n%s", msg, ed->name);
   wmove(win, 0, LNO_PADDING);
 }
 
@@ -540,16 +548,15 @@ static void open_from_file(Editor* ed, char* filepath) {
       // directory TODO
       return;
     } else { // reading from existing file
-      strncpy(ed->filepath, filepath, FILE_NAME_MAXLEN);
+      strncpy(ed->name, filepath, FILE_NAME_MAXLEN);
       ed->fp = fopen(filepath, "r+");
       if (ed->fp == NULL) {
-        perror("fopen");
-        exit(EXIT_FAILURE);
+        error(EXIT_FAILURE, errno, "%s(ed, %s)", __FUNCTION__, filepath);
       }
       sync_file_content(ed);
     }
   } else { // file doesn't exist, but saving given filename to create one later
-    strncpy(ed->filepath, filepath, FILE_NAME_MAXLEN);
+    strncpy(ed->name, filepath, FILE_NAME_MAXLEN);
   }
   _reset(&ed->state, lock_modify);
 }
@@ -562,15 +569,20 @@ static void write_to_file(Editor* ed) {
       buf[i] = (char)gap_get(&ed->buffer, i);
     }
     if (ed->fp == NULL) {
-      if (*ed->filepath == '\0') {
-        strncpy(ed->filepath, DEFAULT_FILE_NAME, FILE_NAME_MAXLEN);
+      if (*ed->name == '\0') { // to save untitled scratch buffers
+        strncpy(ed->name, DEFAULT_FILE_NAME, FILE_NAME_MAXLEN);
       }
-      ed->fp = fopen(ed->filepath, "w+");
+      ed->fp = fopen(ed->name, "w+");
+      if (ed->fp == NULL) {
+        error(EXIT_FAILURE, errno, "%s", __FUNCTION__);
+      }
     }
     rewind(ed->fp);
     fwrite(buf, sizeof(char), len, ed->fp);
     fflush(ed->fp);
-    ftruncate(fileno(ed->fp), ftell(ed->fp));
+    if (ftruncate(fileno(ed->fp), ftell(ed->fp)) == -1) {
+      perror("ftruncate");
+    }
     _reset(&ed->state, dirty_buffer);
   }
 }
@@ -578,21 +590,16 @@ static void write_to_file(Editor* ed) {
 static Editor* editor_init(char* filepath) {
   Editor* ed = malloc(sizeof(Editor));
   if (ed == NULL) {
-    perror("malloc");
-    exit(EXIT_FAILURE);
+    error(EXIT_FAILURE, errno, "malloc");
   }
   *ed = (Editor){0};
   ed->tl = timeline_init();
-
   ed->buffer = gap_init(INIT_BUFFER_SIZE);
-
   ed->lines = gap_init(INIT_BUFFER_SIZE);
   gap_insert(&ed->lines, 0);
-
-  ed->pair_stack = u32Da_init(16, NULL);
+  ed->pair_stack = u32Da_init(PAIR_STK_SIZE);
 
   _set(&ed->state, blank);
-
   if (filepath != NULL) {
     open_from_file(ed, filepath);
   }
@@ -613,6 +620,11 @@ static void editor_free(Editor** ed) {
   *ed = NULL;
 }
 
+static void editor_exit(Editor* ed) {
+  if (!_has(ed->state, dirty_buffer)) {
+    exit(EXIT_SUCCESS);
+  }
+}
 
 static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 win_h, win_w;
