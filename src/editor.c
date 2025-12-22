@@ -328,7 +328,7 @@ static void editor_insert(Editor* ed, u32 new_ch) {
       return;
     }
   }
-  if (!_has(ed->state, undoing)) {
+  if (!_has_any(ed->state, undoing | lock_modify)) {
     editor_update_timeline(ed, new_ch, op_ins);
   }
   // insertion of newch into buffer
@@ -564,16 +564,17 @@ static void open_from_file(Editor* ed, char* filepath) {
 static void write_to_file(Editor* ed) {
   if (_has(ed->state, dirty_buffer)) {
     u32 len = GAP_LEN(&ed->buffer), i;
-    char buf[len];
+    char *buf = malloc(sizeof(char) * len);
     for (i = 0; i < len; i++) {
       buf[i] = (char)gap_get(&ed->buffer, i);
     }
     if (ed->fp == NULL) {
-      if (*ed->name == '\0') { // to save untitled scratch buffers
+      if (*ed->name == '\0') { // obtain filename from user
         strncpy(ed->name, DEFAULT_FILE_NAME, FILE_NAME_MAXLEN);
       }
       ed->fp = fopen(ed->name, "w+");
       if (ed->fp == NULL) {
+        free(buf);
         error(EXIT_FAILURE, errno, "%s", __FUNCTION__);
       }
     }
@@ -581,8 +582,9 @@ static void write_to_file(Editor* ed) {
     fwrite(buf, sizeof(char), len, ed->fp);
     fflush(ed->fp);
     if (ftruncate(fileno(ed->fp), ftell(ed->fp)) == -1) {
-      perror("ftruncate");
+      error(0, errno, "ftruncate");
     }
+    free(buf);
     _reset(&ed->state, dirty_buffer);
   }
 }
@@ -640,8 +642,9 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   update_view(ed, win_h, win_w);
   const u16 content_w = win_w - LNO_PADDING;
   const u32 visual_cursx = vlen(ed, lnbeg(ed, cursy(ed)), cursi(ed)); // find visual cursx position
+   u32 vy;
 
-  for (u32 vy = 0; vy < win_h - 1 && vy + ed->view.y < lncount(ed); vy++) {
+  for (vy = 0; vy < win_h && vy + ed->view.y < lncount(ed); vy++) {
     u32 line_idx = vy + ed->view.y;
     u32 start = lnbeg(ed, line_idx);
     u32 len = lnlen(ed, line_idx);
@@ -666,8 +669,8 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
       }
       vx += char_width;
     }
-    mvwprintw(edwin, vy + 1, 0, "      ~");
   }
+  mvwprintw(edwin, vy, 0, "      ~");
 
   u16 cy = DELTA(ed->view.y, cursy(ed));
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
