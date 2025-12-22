@@ -8,7 +8,6 @@
 #include "include/utils.h"
 #include "include/itypes.h"
 #include "include/gap.h"
-#include "include/err.h"
 #include "include/u32Da.h"
 
 #define SCROLL_BOUNDRY 5
@@ -17,10 +16,11 @@
 #define TAB_STOPS 4
 
 #define UNDO_LIMIT 1024
+#define INIT_BUFFER_SIZE 1024
 #define UNDO_EXPIRY MSEC(650)
 #define STK_EMTY -1
-#define FILE_NAME_LEN 128
-#define DEFAULT_BUF_NAME "textfile.txt"
+#define FILE_NAME_MAXLEN 128
+#define DEFAULT_FILE_NAME "text.txt"
 
 enum timeline_op { op_idle = 0, op_ins = 1, op_del = -1 };
 #define DEFAULT_ACTION_FRAME_SIZ BYTE(32)
@@ -40,17 +40,18 @@ struct timeline {
 };
 
 enum states {
-  sticky_scroll = 0x1, // prevent writing to editor.curs.x for sticky cursor behaviour
+  lock_sticky = 0x1, // prevent writing to editor.curs.x for sticky cursor behaviour
   blank = 0x2, // indicates the editor text buffer is empty
   undoing = 0x4, // editor is performing an undo or redo operation
   commit_action = 0x8, // to force commit current timeline to undo
   pairing = 0x10, // to handle pairing characters
   dirty_view = 0x20, // for updating syntax higlights only when view pointer changes
-  lock_writing = 0x40, // to block features such as pairing when reading from a file
+  lock_modify = 0x40, // prevent the editor from inserting characters by itself
+  dirty_buffer = 0x80, // contents inside buffer has to be written to file
 };
 
 typedef struct {
-  enum states states;
+  enum states state;
   GapBuffer buffer;
   struct {
     u32 x;
@@ -58,12 +59,11 @@ typedef struct {
   } view; // this is visual indices. not logical
   GapBuffer lines;
   isize line_delta;
-  err_handler_t error;
   struct timeline tl;
   u32 sticky_curs;
   u32Da pair_stack;
   FILE* fp;
-  char filepath[FILE_NAME_LEN];
+  char filepath[FILE_NAME_MAXLEN];
 } Editor;
 
 
@@ -107,34 +107,16 @@ static void lncommit(Editor* ed) {
 }
 
 
-// @ERRORS TODO
-enum {
-  editor_err_ok,
-  editor_err_malloc_failure,
-};
-
-void editor_err_handler(i32 errno, void* args) {
-  switch(errno) {
-    case editor_err_malloc_failure:
-      perror("A memory allocation in editor failed.");
-      endwin();
-      exit(-1);
-    case editor_err_ok:
-      return;
-  }
-}
-
-
 /** @CURS **/
 static inline void update_sticky_curs(Editor* ed) {
-  if (!_has(ed->states, sticky_scroll)) {
+  if (!_has(ed->state, lock_sticky)) {
     ed->sticky_curs = cursx(ed);
   }
 }
 
 static void _curs_mov_vertical(Editor* ed, i32 times) {
   if (times == 0) return;
-  _set(&ed->states, sticky_scroll | commit_action);
+  _set(&ed->state, lock_sticky | commit_action);
   u32Da_reset(&ed->pair_stack);
   lncommit(ed);
 
@@ -154,7 +136,7 @@ static void _curs_mov_vertical(Editor* ed, i32 times) {
   gap_move(&ed->buffer, target_pos);
   gap_move(&ed->lines, target_lno + 1);
   sticky_reset:
-  _reset(&ed->states, sticky_scroll);
+  _reset(&ed->state, lock_sticky);
 }
 
 // moves cursor up by times
@@ -165,7 +147,7 @@ static inline void curs_mov_down(Editor* ed, u16 times) { _curs_mov_vertical(ed,
 
 // move the cursor to the left inside buffer by times
 static void curs_mov_left(Editor* ed, u32 times) {
-  _set(&ed->states, commit_action);
+  _set(&ed->state, commit_action);
   while (cursi(ed) > 0 && times > 0) {
     if (gap_get(&ed->buffer, cursi(ed) - 1) == '\n') {
       lncommit(ed);
@@ -179,7 +161,7 @@ static void curs_mov_left(Editor* ed, u32 times) {
 
 // move the cursor to the right inside buffer by times
 static void curs_mov_right(Editor* ed, u32 times) {
-  _set(&ed->states, commit_action);
+  _set(&ed->state, commit_action);
   while (cursi(ed) < GAP_LEN(&ed->buffer) && times > 0) {
     if (gap_get(&ed->buffer, cursi(ed)) == '\n') {
       lncommit(ed);
@@ -259,13 +241,13 @@ static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
   struct action* undo = ed->tl.undo;
   isize* top = &ed->tl.utop;
   if (*top == -1 // The stack is empty (first action)
-      || _has(ed->states, commit_action) // editor explictly instruct to commit
+      || _has(ed->state, commit_action) // editor explictly instruct to commit
       || elapsed_seconds(&ed->tl.time) > UNDO_EXPIRY // time expired since last action
       || op != undo[*top % UNDO_LIMIT].op // current operation is different from previous
   ) {
     struct action new = action_init(cursi(ed), op);
     action_push(undo, top, new);
-    _reset(&ed->states, commit_action);
+    _reset(&ed->state, commit_action);
   }
   u32Da_insert(&undo[*top % UNDO_LIMIT].frame, ch, _END(0));
   timeline_fetch_time(ed);
@@ -331,14 +313,14 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   u32 prev_ch = gap_get(&ed->buffer, cursi(ed) - 1);
   u32 curr_ch = gap_get(&ed->buffer, cursi(ed));
   // skip closing pair if exists
-  if (!_has_any(ed->states, pairing | undoing) && _is_closing_pair(new_ch) && !_is_empty_pair_stk(ed)) {
+  if (!_has_any(ed->state, pairing | undoing) && _is_closing_pair(new_ch) && !_is_empty_pair_stk(ed)) {
     if (curr_ch == new_ch && get_pair(new_ch) == peek_pair(ed)) {
       curs_mov_right(ed, 1);
       pop_pair(ed);
       return;
     }
   }
-  if (!_has(ed->states, undoing)) {
+  if (!_has(ed->state, undoing)) {
     editor_update_timeline(ed, new_ch, op_ins);
   }
   // insertion of newch into buffer
@@ -349,20 +331,25 @@ static void editor_insert(Editor* ed, u32 new_ch) {
   } 
   update_sticky_curs(ed);
   // update blank state on insertion
-  if (_has(ed->states, blank)) {
+  if (_has(ed->state, blank)) {
     u32Da_reset(&ed->pair_stack);
-    _reset(&ed->states, blank);
+    _reset(&ed->state, blank);
   }
-  // pair insertion
-  if (_is_open_pair(new_ch) && !_has_any(ed->states, undoing | pairing | lock_writing)) {
+
+  // pair insertion (if any)
+  if (_is_open_pair(new_ch) && !_has_any(ed->state, undoing | pairing | lock_modify)) {
     if (is_quote(new_ch) && isalpha(prev_ch)) { // refuse to pair quotes followed by alphabet
       return;
     }
-    _set(&ed->states, pairing);
+    _set(&ed->state, pairing);
     push_pair(ed, new_ch);
     editor_insert(ed, get_pair(new_ch));
     curs_mov_left(ed, 1);
-    _reset(&ed->states, pairing);
+    _reset(&ed->state, pairing);
+  }
+
+  if (!_has_any(ed->state, dirty_buffer | lock_modify)) {
+    _set(&ed->state, dirty_buffer);
   }
 }
 
@@ -408,7 +395,7 @@ static void editor_removel(Editor* ed) {
 
   while (removal_weight > 0) {
     u32 ch = gap_get(&ed->buffer, cursi(ed) - 1);
-    if (!_has(ed->states, undoing)) {
+    if (!_has(ed->state, undoing)) {
       editor_update_timeline(ed, ch, op_del);
     }
     gap_remove(&ed->buffer);
@@ -419,7 +406,8 @@ static void editor_removel(Editor* ed) {
     gap_remove(&ed->lines);
   }
   update_sticky_curs(ed);
-  if (GAP_LEN(&ed->buffer) == 0) { _set(&ed->states, blank); }
+  if (GAP_LEN(&ed->buffer) == 0) { _set(&ed->state, blank); }
+  _set(&ed->state, dirty_buffer);
 }
 
 static void editor_remover(Editor* ed) {
@@ -454,25 +442,25 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
 }
 
 void editor_undo(Editor* ed) {
-  _set(&ed->states, undoing);
+  _set(&ed->state, undoing);
   struct action* action = action_pop(ed->tl.undo, &ed->tl.utop);
   if (action == NULL) goto reset;
   timeline_invert_action(ed, action);
   action_push(ed->tl.redo, &ed->tl.rtop, *action);
   action->op = op_idle;
   reset:
-    _reset(&ed->states, undoing);
+    _reset(&ed->state, undoing);
 }
 
 void editor_redo(Editor* ed) {
-  _set(&ed->states, undoing);
+  _set(&ed->state, undoing);
   struct action* action = action_pop(ed->tl.redo, &ed->tl.rtop);
   if (action == NULL) goto reset;
   timeline_invert_action(ed, action);
   action_push(ed->tl.undo, &ed->tl.utop, *action);
   action->op = op_idle;
   reset:
-    _reset(&ed->states, undoing);
+    _reset(&ed->state, undoing);
 }
 
 static inline void editor_display_help(Editor* ed, WINDOW* win, u16 w, u16 h) {
@@ -527,7 +515,7 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
     }
   }
   if (vx != ed->view.x || vy != ed->view.y) {
-    _set(&ed->states, dirty_view);
+    _set(&ed->state, dirty_view);
   }
   ed->view.y = vy;
   ed->view.x = vx;
@@ -535,71 +523,80 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 
 
 // @FILE_HANDLING
-
-static void _open_default_file(Editor* ed) {
-  strcpy(ed->filepath, DEFAULT_BUF_NAME);
-  ed->fp = fopen(DEFAULT_BUF_NAME, "w+");
+static void sync_file_content(Editor* ed) {
+  i8 ch;
+  while ((ch = fgetc(ed->fp)) != EOF) {
+    editor_insert(ed, ch);
+  }
+  curs_mov(ed, 0);
 }
 
-static void open_file(Editor* ed, char* filepath) {
-  _set(&ed->states, lock_writing);
-  if (filepath == NULL) {
-    _open_default_file(ed);
-  } else {
-    struct stat st;
-    if (stat(filepath, &st) == 0) {
-      if (S_ISDIR(st.st_mode)) {
+static void open_from_file(Editor* ed, char* filepath) {
+  _set(&ed->state, lock_modify);
+  struct stat st;
+  if (stat(filepath, &st) == 0) { // obtains file stat
+    if (S_ISDIR(st.st_mode)) { // if it is a directory
 
-        // directory TODO
-        
-      } else {
-        strcpy(ed->filepath, filepath);
-        ed->fp = fopen(filepath, "r+");
-        if (ed->fp == NULL) {
-          perror("fopen");
-          exit(EXIT_FAILURE);
-        }
-        i8 ch;
-        while ((ch = fgetc(ed->fp)) != EOF) {
-          editor_insert(ed, ch);
-        }
-      }
-    } else {
-      strcpy(ed->filepath, filepath);
-      ed->fp = fopen(filepath, "w+");
+      // directory TODO
+      return;
+    } else { // reading from existing file
+      strncpy(ed->filepath, filepath, FILE_NAME_MAXLEN);
+      ed->fp = fopen(filepath, "r+");
       if (ed->fp == NULL) {
         perror("fopen");
         exit(EXIT_FAILURE);
       }
+      sync_file_content(ed);
     }
+  } else { // file doesn't exist, but saving given filename to create one later
+    strncpy(ed->filepath, filepath, FILE_NAME_MAXLEN);
   }
-  _reset(&ed->states, lock_writing);
+  _reset(&ed->state, lock_modify);
 }
 
-static void editor_write_file(Editor* ed) {
-  rewind(ed->fp);
-  u32 i = 0, ch;
-  while ((ch = gap_get(&ed->buffer, i++))) {
-    fputc(ch, ed->fp);
+static void write_to_file(Editor* ed) {
+  if (_has(ed->state, dirty_buffer)) {
+    u32 len = GAP_LEN(&ed->buffer), i;
+    char buf[len];
+    for (i = 0; i < len; i++) {
+      buf[i] = (char)gap_get(&ed->buffer, i);
+    }
+    if (ed->fp == NULL) {
+      if (*ed->filepath == '\0') {
+        strncpy(ed->filepath, DEFAULT_FILE_NAME, FILE_NAME_MAXLEN);
+      }
+      ed->fp = fopen(ed->filepath, "w+");
+    }
+    rewind(ed->fp);
+    fwrite(buf, sizeof(char), len, ed->fp);
+    fflush(ed->fp);
+    ftruncate(fileno(ed->fp), ftell(ed->fp));
+    _reset(&ed->state, dirty_buffer);
   }
 }
 
 static Editor* editor_init(char* filepath) {
   Editor* ed = malloc(sizeof(Editor));
-  if (ed == NULL) editor_err_handler(editor_err_malloc_failure, NULL);
+  if (ed == NULL) {
+    perror("malloc");
+    exit(EXIT_FAILURE);
+  }
   *ed = (Editor){0};
-  ed->error = editor_err_handler;
   ed->tl = timeline_init();
 
-  ed->buffer = gap_init(1024);
+  ed->buffer = gap_init(INIT_BUFFER_SIZE);
 
-  ed->lines = gap_init(1024);
+  ed->lines = gap_init(INIT_BUFFER_SIZE);
   gap_insert(&ed->lines, 0);
 
   ed->pair_stack = u32Da_init(16, NULL);
 
-  _set(&ed->states, blank);
-  open_file(ed, filepath);
+  _set(&ed->state, blank);
+
+  if (filepath != NULL) {
+    open_from_file(ed, filepath);
+  }
+
   return ed;
 }
 
@@ -608,7 +605,9 @@ static void editor_free(Editor** ed) {
   gap_free(&(*ed)->buffer);
   timeline_free(&(*ed)->tl);
   u32Da_free(&(*ed)->pair_stack);
-
+  if ((*ed)->fp != NULL) {
+    fclose((*ed)->fp);
+  }
   **ed = (Editor){0};
   free(*ed);
   *ed = NULL;
@@ -621,7 +620,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   werase(edwin);
   mvwprintw(edwin, 0, 0, "%6d ", ed->view.y + 1);
 
-  if (_has(ed->states, blank)) {
+  if (_has(ed->state, blank)) {
     editor_display_help(ed, edwin, win_w, win_h);
     return;
   }
@@ -662,5 +661,5 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
   
   wmove(edwin, cy, cx);
-  _reset(&ed->states, dirty_view);
+  _reset(&ed->state, dirty_view);
 }

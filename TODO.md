@@ -11,7 +11,7 @@
 - [x] auto pair insetion
 - [x] auto newline to matching pairs
 - [ ] ensure correctness of sticky cursor with line indentation
-- [ ] save and load files
+- [x] save and load files
 - [ ] visual modifiers (selection and ncurses attributes)  
 - [ ] status line  
 - [ ] indentation  

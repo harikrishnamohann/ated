@@ -1,4 +1,5 @@
 #include <ncurses.h>
+#include <stdlib.h>
 #include "include/itypes.h"
 #include "editor.c"
 
@@ -46,13 +47,12 @@ i32 main(i32 argc, char** argv) {
           case '\t': editor_insert(ed, '\t'); break;
           case CTRL('u'): editor_undo(ed); break;
           case CTRL('r'): editor_redo(ed) ;break;
-          case CTRL('s'): editor_write_file(ed); break;
+          case CTRL('s'): write_to_file(ed); break;
         }
       }
       editor_draw(edwin, ed);
     }
     wrefresh(edwin);
   }
-
-  return 0;
+  exit(EXIT_SUCCESS);
 }
