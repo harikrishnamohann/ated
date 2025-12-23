@@ -1,6 +1,7 @@
 #include <ncurses.h>
 #include <stdlib.h>
 #include "include/itypes.h"
+#include "colors.h"
 #include "editor.c"
 
 Editor* ed = NULL;
@@ -19,14 +20,20 @@ void cleanup() {
 i32 main(i32 argc, char** argv) {
   atexit(cleanup);
   initscr();
+  if (has_colors()) {
+    start_color();
+  }
   noecho();
-  curs_set(1);
+  curs_set(0);
   keypad(stdscr, TRUE);
   cbreak();
 
   edwin = newwin(LINES, COLS, 0, 0);
-  ed = editor_init(argv[1]);
+  ed = editor_init(argv[1], 1);
   keypad(edwin, TRUE);
+
+  init_color_pairs(default_light);
+  wbkgd(edwin, COLOR_PAIR(EDITOR_PAIR));
 
   editor_draw(edwin, ed);
   wrefresh(edwin);

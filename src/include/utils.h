@@ -15,6 +15,7 @@ static inline u64 ABS(i64 n) { return n < 0 ?  -(n) : n; }
 static inline i64 DELTA(i64 a, i64 b) { return b - a; }
 static inline isize MIN(isize a, isize b) { return a < b ? a : b; }
 static inline isize MAX(isize a, isize b) { return a > b ? a : b; }
+static inline i64 ROUND(double n) { return (n >= 0) ? (i64)(n + 0.5) : (i64)(n - 0.5); }
 
 // can be used when you need to limit x between a min and max value (inclusive)
 static i64 clamp(i64 x, i64 min, i64 max) {

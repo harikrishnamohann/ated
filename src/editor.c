@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <error.h>
 
+#include "colors.h"
 #include "include/utils.h"
 #include "include/itypes.h"
 #include "include/gap.h"
@@ -54,6 +55,11 @@ enum states {
   dirty_buffer = 0x80, // contents inside buffer has to be written to file
 };
 
+struct status {
+  char warn[FILE_NAME_MAXLEN];
+  char msg[FILE_NAME_MAXLEN];
+};
+
 typedef struct {
   enum states state;
   GapBuffer buffer;
@@ -67,7 +73,9 @@ typedef struct {
   u32 sticky_curs;
   u32Da pair_stack;
   FILE* fp;
+  u8 id;
   char name[FILE_NAME_MAXLEN];
+  struct status status;
 } Editor;
 
 
@@ -471,7 +479,7 @@ void editor_redo(Editor* ed) {
     _reset(&ed->state, undoing);
 }
 
-static inline void editor_display_help(Editor* ed, WINDOW* win, u16 w, u16 h) {
+static inline void display_help(Editor* ed, WINDOW* win, u16 w, u16 h) {
   char* msg = "ctrl + q to quit";
   mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s\n%s", msg, ed->name);
   wmove(win, 0, LNO_PADDING);
@@ -589,7 +597,7 @@ static void write_to_file(Editor* ed) {
   }
 }
 
-static Editor* editor_init(char* filepath) {
+static Editor* editor_init(char* filepath, u8 id) {
   Editor* ed = malloc(sizeof(Editor));
   if (ed == NULL) {
     error(EXIT_FAILURE, errno, "malloc");
@@ -604,7 +612,10 @@ static Editor* editor_init(char* filepath) {
   _set(&ed->state, blank);
   if (filepath != NULL) {
     open_from_file(ed, filepath);
+  } else {
+    *ed->name = '\0';
   }
+  ed->id = id;
 
   return ed;
 }
@@ -628,14 +639,42 @@ static void editor_exit(Editor* ed) {
   }
 }
 
+static void print_statln(WINDOW* edwin, Editor* ed, u16 win_w) {
+  u16 x = 1;
+  if (_has(ed->state, dirty_buffer)) {
+    mvwprintw(edwin, 0, x, "[+]");
+  }
+  x += 4;
+  char* name = ed->name;
+  if (*name == '\0') {
+    name = "scratch buffer";
+  }
+  u8 len = clamp(strlen(name), 0, win_w - x);
+  for (u8 i = 0; i < len; i++) {
+    mvwaddch(edwin, 0, x++, name[i]);
+  }
+
+  mvwchgat(edwin, 0, 0, -1, A_NORMAL, STATLN_PAIR, NULL);
+}
+
+static void highlight_selection(WINDOW* edwin, u16 x, u16 y) {
+  i32 ch = mvwinch(edwin, y, x);
+  mvwchgat(edwin, y, x, 1, A_REVERSE, PAIR_NUMBER(ch & A_COLOR), NULL);
+}
+
 static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 win_h, win_w;
   getmaxyx(edwin, win_h, win_w);
   werase(edwin);
-  mvwprintw(edwin, 0, 0, "%6d ", ed->view.y + 1);
+
+  print_statln(edwin, ed, win_w);
 
   if (_has(ed->state, blank)) {
-    editor_display_help(ed, edwin, win_w, win_h);
+    display_help(ed, edwin, win_w, win_h);
+    wattron(edwin, COLOR_PAIR(LNO_PAIR));
+    mvwprintw(edwin, 1, 0, "%6d  ", ed->view.y + 1);
+    wattroff(edwin, COLOR_PAIR(LNO_PAIR));
+    highlight_selection(edwin, LNO_PADDING, 1);
     return;
   }
 
@@ -644,12 +683,14 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   const u32 visual_cursx = vlen(ed, lnbeg(ed, cursy(ed)), cursi(ed)); // find visual cursx position
    u32 vy;
 
-  for (vy = 0; vy < win_h && vy + ed->view.y < lncount(ed); vy++) {
-    u32 line_idx = vy + ed->view.y;
+  for (vy = 1; vy < win_h && vy + ed->view.y - 1 < lncount(ed); vy++) {
+    u32 line_idx = vy + ed->view.y - 1;
     u32 start = lnbeg(ed, line_idx);
     u32 len = lnlen(ed, line_idx);
     
+    wattron(edwin, COLOR_PAIR(LNO_PAIR));
     mvwprintw(edwin, vy, 0, "%6d ", line_idx + 1);
+    wattroff(edwin, COLOR_PAIR(LNO_PAIR));
 
     for (u32 i = 0, vx = 0; i < len; i++) {
       u32 ch = gap_get(&ed->buffer, start + i);
@@ -670,11 +711,13 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
       vx += char_width;
     }
   }
+  wattron(edwin, COLOR_PAIR(LNO_PAIR));
   mvwprintw(edwin, vy, 0, "      ~");
+  wattroff(edwin, COLOR_PAIR(LNO_PAIR));
 
-  u16 cy = DELTA(ed->view.y, cursy(ed));
+  u16 cy = DELTA(ed->view.y, cursy(ed)) + 1;
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
   
-  wmove(edwin, cy, cx);
+  highlight_selection(edwin, cx, cy);
   _reset(&ed->state, dirty_view);
 }

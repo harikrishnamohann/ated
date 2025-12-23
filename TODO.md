@@ -12,10 +12,10 @@
 - [x] auto newline to matching pairs
 - [ ] ensure correctness of sticky cursor with line indentation
 - [x] save and load files
-- [ ] visual modifiers (selection and ncurses attributes)  
-- [ ] status line  
-- [ ] indentation  
-- [ ] command palette  
-- [ ] syntax highlighting  
-- [ ] helix mode  
-- [ ] multiple instances  
+- [-] colors
+- [ ] selection
+- [-] status line  
+- [x] indentation
+- [ ] command palette
+- [ ] syntax highlighting 
+- [ ] multiple instances
