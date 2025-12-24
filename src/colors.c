@@ -31,7 +31,7 @@ static void set_default_light() {
   test[bg] = editor[bg]; test[fg] = COLOR_BLUE;
 }
 
-void init_color_pairs(Theme theme) {
+void set_theme(Theme theme) {
   switch (theme) {
     case default_light: set_default_light(); break;
   }

@@ -1,7 +1,7 @@
 #include <ncurses.h>
 #include <stdlib.h>
 #include "include/itypes.h"
-#include "colors.h"
+#include "colors.c"
 #include "editor.c"
 
 Editor* ed = NULL;
@@ -31,8 +31,8 @@ i32 main(i32 argc, char** argv) {
 
   if (has_colors()) {
     start_color();
-    init_color_pairs(default_light);
-    wbkgd(edwin, COLOR_PAIR(EDITOR_PAIR));
+    set_theme(default_light);
+    wbkgd(edwin, COLOR_PAIR(EDITOR_PAIR) | ' ');
   }
 
   editor_draw(edwin, ed);

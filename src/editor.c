@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <error.h>
 
-#include "colors.h"
+#include "colors.c"
 #include "include/utils.h"
 #include "include/itypes.h"
 #include "include/gap.h"
@@ -326,34 +326,35 @@ static inline u32 pop_pair(Editor* ed) { return u32Da_remove(&ed->pair_stack, _E
 static inline bool _is_empty_pair_stk(Editor* ed) { return ed->pair_stack.len == 0; }
 
 static void editor_insert(Editor* ed, u32 new_ch) {
-  u32 prev_ch = gap_get(&ed->buffer, cursi(ed) - 1);
-  u32 curr_ch = gap_get(&ed->buffer, cursi(ed));
+  if (!_has_any(ed->state, undoing | lock_modify)) {
+    editor_update_timeline(ed, new_ch, op_ins);
+  }
   // skip closing pair if exists
-  if (!_has_any(ed->state, pairing | undoing) && _is_closing_pair(new_ch) && !_is_empty_pair_stk(ed)) {
-    if (curr_ch == new_ch && get_pair(new_ch) == peek_pair(ed)) {
+  if (!_is_empty_pair_stk(ed) && !_has_any(ed->state, pairing | undoing | lock_modify) && _is_closing_pair(new_ch)) {
+    if (gap_get(&ed->buffer, cursi(ed)) == new_ch && get_pair(new_ch) == peek_pair(ed)) {
       curs_mov_right(ed, 1);
       pop_pair(ed);
       return;
     }
   }
-  if (!_has_any(ed->state, undoing | lock_modify)) {
-    editor_update_timeline(ed, new_ch, op_ins);
-  }
-  // insertion of newch into buffer
+
   gap_insert(&ed->buffer, new_ch);
   ed->line_delta++;
   if (new_ch == '\n') { // handling lines
     gap_insert(&ed->lines, cursi(ed));
   } 
   update_sticky_curs(ed);
-  // update blank state on insertion
+
   if (_has(ed->state, blank)) {
-    u32Da_reset(&ed->pair_stack);
     _reset(&ed->state, blank);
   }
 
+  if (_has(ed->state, lock_modify)) return;
+  // following instructions will be ignored in lock_modify state
+
+  u32 prev_ch = gap_get(&ed->buffer, cursi(ed) - 2);
   // pair insertion (if any)
-  if (_is_open_pair(new_ch) && !_has_any(ed->state, undoing | pairing | lock_modify)) {
+  if (_is_open_pair(new_ch) && !_has_any(ed->state, undoing | pairing)) {
     if (is_quote(new_ch) && isalpha(prev_ch)) { // refuse to pair quotes followed by alphabet
       return;
     }
@@ -364,7 +365,7 @@ static void editor_insert(Editor* ed, u32 new_ch) {
     _reset(&ed->state, pairing);
   }
 
-  if (!_has_any(ed->state, dirty_buffer | lock_modify)) {
+  if (!_has_any(ed->state, dirty_buffer)) {
     _set(&ed->state, dirty_buffer);
   }
 }
@@ -479,10 +480,30 @@ void editor_redo(Editor* ed) {
     _reset(&ed->state, undoing);
 }
 
-static inline void display_help(Editor* ed, WINDOW* win, u16 w, u16 h) {
-  char* msg = "ctrl + q to quit";
-  mvwprintw(win, CENTER(h, 0), CENTER(w, strlen(msg)), "%s\n%s", msg, ed->name);
-  wmove(win, 0, LNO_PADDING);
+static inline void display_help(Editor* ed, WINDOW* edwin, u16 w, u16 h) {
+  wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
+  char* doc[] = {
+    "KEYBINDINGS",
+    "-------------------------------",
+    "arrows : cursor movements",
+    "F2 : Open command pallete",
+    "ctrl[q] : Safe exit from editor",
+    "ctrl[s] : Save buffer to a file",
+    "ctrl[u] : Undo last action",
+    "ctrl[r] : Redo last undo",
+    "***",
+  };
+
+  u8 lines = sizeof(doc) / sizeof(char*);
+  i8 y = CENTER(h, lines);
+
+  for (u8 i = 0; i < lines; i++) {
+    i8 x = CENTER(w, strlen(doc[i]));
+    mvwprintw(edwin, y++, x, "%s", doc[i]);
+  }
+
+  wmove(edwin, 0, LNO_PADDING);
+  wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
 }
 
 /** @VIEW **/
@@ -539,20 +560,28 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
 
 
 // @FILE_HANDLING
-static void sync_file_content(Editor* ed) {
-  i8 ch;
-  while ((ch = fgetc(ed->fp)) != EOF) {
-    editor_insert(ed, ch);
+static void fetch_file_content(Editor* ed) {
+  _set(&ed->state, lock_modify);
+  fseek(ed->fp, 0, SEEK_END);
+  u32 fsize = ftell(ed->fp);
+  rewind(ed->fp);
+  char* buf = malloc(sizeof(char) * fsize); // not accounted for null terminator
+  if (fread(buf, sizeof(char), fsize, ed->fp) != fsize) {
+    free(buf);
+    error(EXIT_FAILURE, errno, "%s", __FUNCTION__);
+  }
+  for (u32 i = 0; i < fsize; i++) {
+    editor_insert(ed, buf[i]);
   }
   curs_mov(ed, 0);
+  free(buf);
+  _reset(&ed->state, lock_modify);
 }
 
 static void open_from_file(Editor* ed, char* filepath) {
-  _set(&ed->state, lock_modify);
   struct stat st;
   if (stat(filepath, &st) == 0) { // obtains file stat
     if (S_ISDIR(st.st_mode)) { // if it is a directory
-
       // directory TODO
       return;
     } else { // reading from existing file
@@ -561,12 +590,11 @@ static void open_from_file(Editor* ed, char* filepath) {
       if (ed->fp == NULL) {
         error(EXIT_FAILURE, errno, "%s(ed, %s)", __FUNCTION__, filepath);
       }
-      sync_file_content(ed);
+      fetch_file_content(ed);
     }
   } else { // file doesn't exist, but saving given filename to create one later
     strncpy(ed->name, filepath, STLEN);
   }
-  _reset(&ed->state, lock_modify);
 }
 
 static void write_to_file(Editor* ed) {
@@ -577,7 +605,7 @@ static void write_to_file(Editor* ed) {
       buf[i] = (char)gap_get(&ed->buffer, i);
     }
     if (ed->fp == NULL) {
-      if (*ed->name == '\0') { // obtain filename from user
+      if (*ed->name == '\0') { // obtain filename from user TODO
         strncpy(ed->name, DEFAULT_FILE_NAME, STLEN);
       }
       ed->fp = fopen(ed->name, "w+");

@@ -36,7 +36,7 @@
                 clang \$SRC \$CFLAGS -Wall -fsanitize=address -g -o \$TARGET
               else if test \"\$mode\" = \"release\"
                 echo \"[Release Build]\"
-                clang \$SRC -O2 \$CFLAGS -o \$TARGET
+                clang \$SRC -O3 \$CFLAGS -o \$TARGET
               else
                 echo \"Usage: build [debug|release]\"
               end
