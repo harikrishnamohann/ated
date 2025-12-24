@@ -12,9 +12,9 @@
 - [x] auto newline to matching pairs
 - [ ] ensure correctness of sticky cursor with line indentation
 - [x] save and load files
-- [-] colors
+- [x] colors
 - [ ] selection
-- [-] status line  
+- [x] status line  
 - [x] indentation
 - [ ] command palette
 - [ ] syntax highlighting 

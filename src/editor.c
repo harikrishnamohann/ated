@@ -16,7 +16,7 @@
 #define SCROLL_BOUNDRY 5
 #define TAB_STOPS 4
 
-#define FILE_NAME_MAXLEN 128
+#define STLEN 128
 #define DEFAULT_FILE_NAME "text.txt"
 #define INIT_BUFFER_SIZE 1024
 
@@ -56,8 +56,8 @@ enum states {
 };
 
 struct status {
-  char warn[FILE_NAME_MAXLEN];
-  char msg[FILE_NAME_MAXLEN];
+  char warn[STLEN];
+  char msg[STLEN];
 };
 
 typedef struct {
@@ -74,7 +74,7 @@ typedef struct {
   u32Da pair_stack;
   FILE* fp;
   u8 id;
-  char name[FILE_NAME_MAXLEN];
+  char name[STLEN];
   struct status status;
 } Editor;
 
@@ -556,7 +556,7 @@ static void open_from_file(Editor* ed, char* filepath) {
       // directory TODO
       return;
     } else { // reading from existing file
-      strncpy(ed->name, filepath, FILE_NAME_MAXLEN);
+      strncpy(ed->name, filepath, STLEN);
       ed->fp = fopen(filepath, "r+");
       if (ed->fp == NULL) {
         error(EXIT_FAILURE, errno, "%s(ed, %s)", __FUNCTION__, filepath);
@@ -564,7 +564,7 @@ static void open_from_file(Editor* ed, char* filepath) {
       sync_file_content(ed);
     }
   } else { // file doesn't exist, but saving given filename to create one later
-    strncpy(ed->name, filepath, FILE_NAME_MAXLEN);
+    strncpy(ed->name, filepath, STLEN);
   }
   _reset(&ed->state, lock_modify);
 }
@@ -578,7 +578,7 @@ static void write_to_file(Editor* ed) {
     }
     if (ed->fp == NULL) {
       if (*ed->name == '\0') { // obtain filename from user
-        strncpy(ed->name, DEFAULT_FILE_NAME, FILE_NAME_MAXLEN);
+        strncpy(ed->name, DEFAULT_FILE_NAME, STLEN);
       }
       ed->fp = fopen(ed->name, "w+");
       if (ed->fp == NULL) {
@@ -592,6 +592,7 @@ static void write_to_file(Editor* ed) {
     if (ftruncate(fileno(ed->fp), ftell(ed->fp)) == -1) {
       error(0, errno, "ftruncate");
     }
+    strncpy(ed->status.msg, "File saved.", STLEN);
     free(buf);
     _reset(&ed->state, dirty_buffer);
   }
@@ -637,28 +638,54 @@ static void editor_exit(Editor* ed) {
   if (!_has(ed->state, dirty_buffer)) {
     exit(EXIT_SUCCESS);
   }
+  strncpy(ed->status.warn, "press ^s to save or ^q^q to force quit", STLEN);
 }
 
-static void print_statln(WINDOW* edwin, Editor* ed, u16 win_w) {
+static void print_statusln(WINDOW* edwin, Editor* ed, u16 win_w) {
+  mvwchgat(edwin, 0, 0, -1, A_NORMAL, STATLN_PAIR, NULL);
   u16 x = 1;
+  char* str = "[+]";
+  wattron(edwin, COLOR_PAIR(STATLN_PAIR));
   if (_has(ed->state, dirty_buffer)) {
-    mvwprintw(edwin, 0, x, "[+]");
+    mvwprintw(edwin, 0, x, "%s", str);
   }
-  x += 4;
-  char* name = ed->name;
-  if (*name == '\0') {
-    name = "scratch buffer";
+  x += strlen(str);
+
+  if (*ed->name == '\0') {
+    str = "scratch buffer";
+  } else {
+    str = ed->name;
   }
-  u8 len = clamp(strlen(name), 0, win_w - x);
-  for (u8 i = 0; i < len; i++) {
-    mvwaddch(edwin, 0, x++, name[i]);
+  u32 len = clamp(strlen(str), 0, win_w - x);
+  for (u32 i = 0; i < len; i++) {
+    mvwaddch(edwin, 0, x++, str[i]);
   }
 
-  mvwchgat(edwin, 0, 0, -1, A_NORMAL, STATLN_PAIR, NULL);
+  if (*ed->status.warn != '\0') {
+    wattron(edwin, COLOR_PAIR(STATLN_WARN_PAIR));
+    str = ed->status.warn;
+    len = clamp(strlen(str), 0, win_w - x - 2);
+    x = win_w - len - 1;
+    for (u32 i = 0; i < len; i++) {
+      mvwaddch(edwin, 0, x++, str[i]);
+    }
+    wattroff(edwin, COLOR_PAIR(STATLN_WARN_PAIR));
+    *str = '\0';
+  } else if (*ed->status.msg != '\0') {
+    str = ed->status.msg;
+    len = clamp(strlen(str), 0, win_w - x - 2);
+    x = win_w - len - 1;
+    for (u32 i = 0; i < len; i++) {
+      mvwaddch(edwin, 0, x++, str[i]);
+    }
+    *str = '\0';
+  }
+  wattroff(edwin, COLOR_PAIR(STATLN_PAIR));
 }
 
 static void highlight_selection(WINDOW* edwin, u16 x, u16 y) {
   i32 ch = mvwinch(edwin, y, x);
+  mvwchgat(edwin, y, 0, LNO_PADDING, A_NORMAL | A_BOLD, TEST_PAIR, NULL);
   mvwchgat(edwin, y, x, 1, A_REVERSE, PAIR_NUMBER(ch & A_COLOR), NULL);
 }
 
@@ -667,13 +694,13 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   getmaxyx(edwin, win_h, win_w);
   werase(edwin);
 
-  print_statln(edwin, ed, win_w);
+  print_statusln(edwin, ed, win_w);
 
   if (_has(ed->state, blank)) {
     display_help(ed, edwin, win_w, win_h);
-    wattron(edwin, COLOR_PAIR(LNO_PAIR));
+    wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
     mvwprintw(edwin, 1, 0, "%6d  ", ed->view.y + 1);
-    wattroff(edwin, COLOR_PAIR(LNO_PAIR));
+    wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
     highlight_selection(edwin, LNO_PADDING, 1);
     return;
   }
@@ -688,9 +715,9 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     u32 start = lnbeg(ed, line_idx);
     u32 len = lnlen(ed, line_idx);
     
-    wattron(edwin, COLOR_PAIR(LNO_PAIR));
+    wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
     mvwprintw(edwin, vy, 0, "%6d ", line_idx + 1);
-    wattroff(edwin, COLOR_PAIR(LNO_PAIR));
+    wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
 
     for (u32 i = 0, vx = 0; i < len; i++) {
       u32 ch = gap_get(&ed->buffer, start + i);
@@ -711,9 +738,9 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
       vx += char_width;
     }
   }
-  wattron(edwin, COLOR_PAIR(LNO_PAIR));
+  wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
   mvwprintw(edwin, vy, 0, "      ~");
-  wattroff(edwin, COLOR_PAIR(LNO_PAIR));
+  wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
 
   u16 cy = DELTA(ed->view.y, cursy(ed)) + 1;
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
