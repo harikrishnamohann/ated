@@ -27,7 +27,7 @@
 enum timeline_op { op_idle = 0, op_ins = 1, op_del = -1 };
 #define DEFAULT_ACTION_FRAME_SIZ BYTE(32)
 
-#define LNO_PADDING 8
+#define LNO_PADDING 7
 #define PAIR_STK_SIZE 16
 
 struct action {
@@ -73,9 +73,12 @@ typedef struct {
   u32 sticky_curs;
   u32Da pair_stack;
   FILE* fp;
-  u8 id;
   char name[STLEN];
   struct status status;
+  struct {
+    u32 beg;
+    u32 len;
+  } sel;
 } Editor;
 
 
@@ -256,7 +259,7 @@ static void editor_update_timeline(Editor* ed, u32 ch, enum timeline_op op) {
   if (ed->tl.rtop != STK_EMTY) timeline_redo_free(&ed->tl);
   struct action* undo = ed->tl.undo;
   isize* top = &ed->tl.utop;
-  if (*top == -1 // The stack is empty (first action)
+  if (*top == STK_EMTY // The stack is empty (first action)
       || _has(ed->state, commit_action) // editor explictly instruct to commit
       || elapsed_seconds(&ed->tl.time) > UNDO_EXPIRY // time expired since last action
       || op != undo[*top % UNDO_LIMIT].op // current operation is different from previous
@@ -446,7 +449,7 @@ static void timeline_invert_action(Editor* ed, struct action* action) {
       editor_insert(ed, u32Da_get(&action->frame, _END(i)));
     }
   }
-  action->op *= -1;
+  action->op *= STK_EMTY;
 
   // reverse the vector action->frame
   u32Da *vec = &action->frame;
@@ -481,7 +484,7 @@ void editor_redo(Editor* ed) {
 }
 
 static inline void display_help(Editor* ed, WINDOW* edwin, u16 w, u16 h) {
-  wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
+  wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
   char* doc[] = {
     "KEYBINDINGS",
     "-------------------------------",
@@ -503,7 +506,7 @@ static inline void display_help(Editor* ed, WINDOW* edwin, u16 w, u16 h) {
   }
 
   wmove(edwin, 0, LNO_PADDING);
-  wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
+  wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
 }
 
 /** @VIEW **/
@@ -526,7 +529,7 @@ static u32 vlen(Editor* ed, u32 start, u32 end) {
 static void update_view(Editor* ed, u16 win_h, u16 win_w) {
   // updating view.y
   u32 vy = ed->view.y, vx = ed->view.x;
-  const u32 scroll_down_threshold = vy + win_h - SCROLL_BOUNDRY;
+  const u32 scroll_down_threshold = vy + win_h - SCROLL_BOUNDRY - 1;
   if (cursy(ed) > scroll_down_threshold) {
     vy += cursy(ed) - scroll_down_threshold; // scroll down
   } else if (cursy(ed) < vy + SCROLL_BOUNDRY) {
@@ -553,9 +556,9 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
   }
   if (vx != ed->view.x || vy != ed->view.y) {
     _set(&ed->state, dirty_view);
+    ed->view.y = vy;
+    ed->view.x = vx;
   }
-  ed->view.y = vy;
-  ed->view.x = vx;
 }
 
 
@@ -626,7 +629,7 @@ static void write_to_file(Editor* ed) {
   }
 }
 
-static Editor* editor_init(char* filepath, u8 id) {
+static Editor* editor_init(char* filepath) {
   Editor* ed = malloc(sizeof(Editor));
   if (ed == NULL) {
     error(EXIT_FAILURE, errno, "malloc");
@@ -644,8 +647,6 @@ static Editor* editor_init(char* filepath, u8 id) {
   } else {
     *ed->name = '\0';
   }
-  ed->id = id;
-
   return ed;
 }
 
@@ -712,9 +713,8 @@ static void print_statusln(WINDOW* edwin, Editor* ed, u16 win_w) {
 }
 
 static void highlight_selection(WINDOW* edwin, u16 x, u16 y) {
-  i32 ch = mvwinch(edwin, y, x);
-  mvwchgat(edwin, y, 0, LNO_PADDING, A_NORMAL | A_BOLD, TEST_PAIR, NULL);
-  mvwchgat(edwin, y, x, 1, A_REVERSE, PAIR_NUMBER(ch & A_COLOR), NULL);
+  mvwchgat(edwin, y, 0, LNO_PADDING, A_NORMAL | A_BOLD, TXT_GREEN, NULL);
+  mvwchgat(edwin, y, x, 1, A_NORMAL, CURS_PAIR, NULL);
 }
 
 static void editor_draw(WINDOW* edwin, Editor* ed) {
@@ -726,9 +726,9 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
 
   if (_has(ed->state, blank)) {
     display_help(ed, edwin, win_w, win_h);
-    wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
-    mvwprintw(edwin, 1, 0, "%6d  ", ed->view.y + 1);
-    wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
+    wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
+    mvwprintw(edwin, 1, 0, "%5d  ", ed->view.y + 1);
+    wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
     highlight_selection(edwin, LNO_PADDING, 1);
     return;
   }
@@ -743,9 +743,9 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     u32 start = lnbeg(ed, line_idx);
     u32 len = lnlen(ed, line_idx);
     
-    wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
-    mvwprintw(edwin, vy, 0, "%6d ", line_idx + 1);
-    wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
+    wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
+    mvwprintw(edwin, vy, 0, "%5d ", line_idx + 1);
+    wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
 
     for (u32 i = 0, vx = 0; i < len; i++) {
       u32 ch = gap_get(&ed->buffer, start + i);
@@ -766,9 +766,11 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
       vx += char_width;
     }
   }
-  wattron(edwin, COLOR_PAIR(ANNOTATE_PAIR));
-  mvwprintw(edwin, vy, 0, "      ~");
-  wattroff(edwin, COLOR_PAIR(ANNOTATE_PAIR));
+  if (vy < win_h) {
+    wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
+    mvwprintw(edwin, vy, 0, "      ~");
+    wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
+  }
 
   u16 cy = DELTA(ed->view.y, cursy(ed)) + 1;
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
