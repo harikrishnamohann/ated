@@ -53,7 +53,7 @@ enum states {
   pairing = 0x10, // to handle pairing characters
   dirty_view = 0x20, // for updating syntax higlights only when view pointer changes
   lock_modify = 0x40, // prevent the editor from inserting characters by itself
-  dirty_buffer = 0x80, // contents inside buffer has to be written to file
+  unwritten_buffer = 0x80, // contents inside buffer has to be written to file
 };
 
 enum status_msg_type {
@@ -382,9 +382,7 @@ static void editor_insert(Editor* ed, u32 new_ch) {
     _reset(&ed->state, pairing);
   }
 
-  if (!_has_any(ed->state, dirty_buffer)) {
-    _set(&ed->state, dirty_buffer);
-  }
+  _set(&ed->state, unwritten_buffer);
 }
 
 static void indent_from_prevln(Editor* ed) {
@@ -442,8 +440,10 @@ static void editor_removel(Editor* ed) {
   }
   update_min_changed_indx(ed, rmidx);
   update_sticky_curs(ed);
-  if (GAP_LEN(&ed->buffer) == 0) { _set(&ed->state, blank); }
-  _set(&ed->state, dirty_buffer);
+  if (GAP_LEN(&ed->buffer) == 0) {
+    _set(&ed->state, blank);
+  }
+  _set(&ed->state, unwritten_buffer);
 }
 
 static void editor_remover(Editor* ed) {
@@ -499,25 +499,26 @@ void editor_redo(Editor* ed) {
     _reset(&ed->state, undoing);
 }
 
-static inline void display_help(Editor* ed, WINDOW* edwin, u16 w, u16 h) {
+static inline void display_help(Editor* ed, WINDOW* edwin, u16 win_w, u16 win_h) {
   wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
   char* doc[] = {
-    "KEYBINDINGS",
-    "-------------------------------",
-    "arrows : cursor movements",
-    "F2 : Open command pallete",
-    "ctrl[q] : Safe exit from editor",
-    "ctrl[s] : Save buffer to a file",
+    "KEY BINDINGS",
+    "arrows  : cursor movements",
+    "ctrl[q] : Safely close editor",
+    "ctrl[s] : Write to file",
     "ctrl[u] : Undo last action",
     "ctrl[r] : Redo last undo",
-    "***",
+    "F2      : Open command pallete",
   };
 
   u8 lines = sizeof(doc) / sizeof(char*);
-  i8 y = CENTER(h, lines);
+  u8 y = clamp(CENTER(win_h, lines), 0 , win_h - 1), x = 0;
+  for (u8 i = 0; i < lines; i++) {
+    x = MAX(x, strlen(doc[i]));
+  }
+  x = clamp(CENTER(win_w, x), 0, win_w - 1);
 
   for (u8 i = 0; i < lines; i++) {
-    i8 x = CENTER(w, strlen(doc[i]));
     mvwprintw(edwin, y++, x, "%s", doc[i]);
   }
 
@@ -626,7 +627,7 @@ void set_status(Editor* ed, enum status_msg_type type, const char* fmt, ...) {
 }
 
 static void write_to_file(Editor* ed) {
-  if (_has(ed->state, dirty_buffer)) {
+  if (_has(ed->state, unwritten_buffer)) {
     u32 len = GAP_LEN(&ed->buffer) - ed->min_changed_indx, i;
     char *buf = malloc(sizeof(char) * len);
     for (i = 0; i < len; i++) {
@@ -651,7 +652,7 @@ static void write_to_file(Editor* ed) {
     set_status(ed, st_norm, "%d bytes written", len);
     set_min_changed_indx(ed, ed->min_changed_indx + len);
     free(buf);
-    _reset(&ed->state, dirty_buffer);
+    _reset(&ed->state, unwritten_buffer);
   }
 }
 
@@ -690,7 +691,7 @@ static void editor_free(Editor** ed) {
 }
 
 static void editor_exit(Editor* ed) {
-  if (!_has(ed->state, dirty_buffer)) {
+  if (!_has(ed->state, unwritten_buffer)) {
     exit(EXIT_SUCCESS);
   }
   set_status(ed, st_warn, "save the file before quit!");
@@ -701,7 +702,7 @@ static void print_statusln(WINDOW* edwin, Editor* ed, u16 win_w) {
   u16 x = 1;
   char* str = "[+]";
   wattron(edwin, COLOR_PAIR(STATLN_PAIR));
-  if (_has(ed->state, dirty_buffer)) {
+  if (_has(ed->state, unwritten_buffer)) {
     mvwprintw(edwin, 0, x, "%s", str);
   }
   x += strlen(str);
