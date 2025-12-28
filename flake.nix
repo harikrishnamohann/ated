@@ -22,12 +22,12 @@
           pkg-config --cflags ncurses | tr ' ' '\n' >> compile_flags.txt
           echo $NIX_CFLAGS_COMPILE | tr ' ' '\n' >> compile_flags.txt
           fishConfig="
-            function fish_prompt; set_color green; echo -n \"[ated]\"; set_color normal; echo \" :: \"; end;
+            function fish_prompt; set_color green; echo -n \"[laed]\"; set_color normal; echo \" :: \"; end;
 
             function build
               set mode \$argv[1]
               set SRC ./src/main.c
-              set TARGET \"ated\"
+              set TARGET \"laed\"
               
               set CFLAGS \"-lncurses\" \"-std=gnu17\"
 
@@ -45,7 +45,7 @@
             # Shortcuts
             abbr --add b \"build debug\"
             abbr --add br \"build release\"
-            abbr --add run \"build debug && ./ated\"
+            abbr --add run \"build debug && ./laed\"
           "
           exec ${pkgs.fish}/bin/fish -C "$fishConfig"
         '';
