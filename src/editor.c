@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <error.h>
+#include <stdarg.h>
 
 #include "colors.c"
 #include "include/utils.h"
@@ -13,7 +14,7 @@
 #include "include/gap.h"
 #include "include/u32Da.h"
 
-#define SCROLL_BOUNDRY 5
+#define SCROLL_BOUNDRY 6
 #define TAB_STOPS 4
 
 #define STLEN 128
@@ -55,30 +56,30 @@ enum states {
   dirty_buffer = 0x80, // contents inside buffer has to be written to file
 };
 
+enum status_msg_type {
+  st_nothing = 0, // indicate whether status line contains a message or not
+  st_norm = STATLN_PAIR,
+  st_warn = STATLN_WARN_PAIR,
+};
+
 struct status {
-  char warn[STLEN];
+  enum status_msg_type type;
   char msg[STLEN];
 };
 
 typedef struct {
   enum states state;
   GapBuffer buffer;
-  struct {
-    u32 x;
-    u32 y;
-  } view; // this is visual indices. not logical
+  struct { u32 x; u32 y; } view; // this is visual indices. not logical
   GapBuffer lines;
   isize line_delta;
   struct timeline tl;
   u32 sticky_curs;
   u32Da pair_stack;
   FILE* fp;
-  char name[STLEN];
+  char bufname[STLEN];
   struct status status;
-  struct {
-    u32 beg;
-    u32 len;
-  } sel;
+  u32 min_changed_indx;
 } Editor;
 
 
@@ -123,6 +124,16 @@ static void lncommit(Editor* ed) {
     gap_set(&ed->lines, i, changes);
   }
   ed->line_delta = 0;
+}
+
+static inline void update_min_changed_indx(Editor* ed, u32 indx) {
+  if (indx < ed->min_changed_indx) {
+    ed->min_changed_indx = indx;
+  }
+}
+
+static inline void set_min_changed_indx(Editor* ed, u32 indx) {
+  ed->min_changed_indx = clamp(indx, 0, GAP_LEN(&ed->buffer));
 }
 
 
@@ -333,7 +344,9 @@ static void editor_insert(Editor* ed, u32 new_ch) {
     editor_update_timeline(ed, new_ch, op_ins);
   }
   // skip closing pair if exists
-  if (!_is_empty_pair_stk(ed) && !_has_any(ed->state, pairing | undoing | lock_modify) && _is_closing_pair(new_ch)) {
+  if (!_is_empty_pair_stk(ed) &&
+      !_has_any(ed->state, pairing | undoing | lock_modify) &&
+      _is_closing_pair(new_ch)) {
     if (gap_get(&ed->buffer, cursi(ed)) == new_ch && get_pair(new_ch) == peek_pair(ed)) {
       curs_mov_right(ed, 1);
       pop_pair(ed);
@@ -341,6 +354,7 @@ static void editor_insert(Editor* ed, u32 new_ch) {
     }
   }
 
+  update_min_changed_indx(ed, cursi(ed));
   gap_insert(&ed->buffer, new_ch);
   ed->line_delta++;
   if (new_ch == '\n') { // handling lines
@@ -404,27 +418,29 @@ static void editor_insert_newline(Editor* ed) {
 }
 
 static void editor_removel(Editor* ed) {
-  u32 removing_ch = gap_get(&ed->buffer, cursi(ed) - 1);
+  u32 rmidx = cursi(ed) - 1;
+  u32 removing_ch = gap_get(&ed->buffer, rmidx);
   if ((u8)removing_ch == 0) return;
 
-  u8 removal_weight = 1;
-  if (_is_open_pair(removing_ch) && gap_get(&ed->buffer, cursi(ed)) == get_pair(removing_ch)) {
+  u8 removing_items = 1;
+  if (_is_open_pair(removing_ch) && gap_get(&ed->buffer, rmidx + 1) == get_pair(removing_ch)) {
     curs_mov_right(ed, 1);
-    removal_weight = 2;
+    removing_items = 2;
   }
 
-  while (removal_weight > 0) {
-    u32 ch = gap_get(&ed->buffer, cursi(ed) - 1);
+  while (removing_items > 0) {
+    u32 ch = gap_get(&ed->buffer, rmidx);
     if (!_has(ed->state, undoing)) {
       editor_update_timeline(ed, ch, op_del);
     }
     gap_remove(&ed->buffer);
     ed->line_delta--;
-    removal_weight--;
+    removing_items--;
   }
   if (removing_ch == '\n') {
-    gap_remove(&ed->lines);
+    gap_remove(&ed->lines); // removing line entry
   }
+  update_min_changed_indx(ed, rmidx);
   update_sticky_curs(ed);
   if (GAP_LEN(&ed->buffer) == 0) { _set(&ed->state, blank); }
   _set(&ed->state, dirty_buffer);
@@ -571,11 +587,12 @@ static void fetch_file_content(Editor* ed) {
   char* buf = malloc(sizeof(char) * fsize); // not accounted for null terminator
   if (fread(buf, sizeof(char), fsize, ed->fp) != fsize) {
     free(buf);
-    error(EXIT_FAILURE, errno, "%s", __FUNCTION__);
+    perror("fread");
   }
   for (u32 i = 0; i < fsize; i++) {
     editor_insert(ed, buf[i]);
   }
+  ed->min_changed_indx = fsize;
   curs_mov(ed, 0);
   free(buf);
   _reset(&ed->state, lock_modify);
@@ -588,7 +605,7 @@ static void open_from_file(Editor* ed, char* filepath) {
       // directory TODO
       return;
     } else { // reading from existing file
-      strncpy(ed->name, filepath, STLEN);
+      strncpy(ed->bufname, filepath, STLEN);
       ed->fp = fopen(filepath, "r+");
       if (ed->fp == NULL) {
         error(EXIT_FAILURE, errno, "%s(ed, %s)", __FUNCTION__, filepath);
@@ -596,34 +613,43 @@ static void open_from_file(Editor* ed, char* filepath) {
       fetch_file_content(ed);
     }
   } else { // file doesn't exist, but saving given filename to create one later
-    strncpy(ed->name, filepath, STLEN);
+    strncpy(ed->bufname, filepath, STLEN);
   }
+}
+
+void set_status(Editor* ed, enum status_msg_type type, const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(ed->status.msg, STLEN, fmt, args);
+  ed->status.type = type;
+  va_end(args);
 }
 
 static void write_to_file(Editor* ed) {
   if (_has(ed->state, dirty_buffer)) {
-    u32 len = GAP_LEN(&ed->buffer), i;
+    u32 len = GAP_LEN(&ed->buffer) - ed->min_changed_indx, i;
     char *buf = malloc(sizeof(char) * len);
     for (i = 0; i < len; i++) {
-      buf[i] = (char)gap_get(&ed->buffer, i);
+      buf[i] = (char)gap_get(&ed->buffer, i + ed->min_changed_indx);
     }
     if (ed->fp == NULL) {
-      if (*ed->name == '\0') { // obtain filename from user TODO
-        strncpy(ed->name, DEFAULT_FILE_NAME, STLEN);
+      if (*ed->bufname == '\0') { // obtain filename from user TODO
+        strncpy(ed->bufname, DEFAULT_FILE_NAME, STLEN);
       }
-      ed->fp = fopen(ed->name, "w+");
+      ed->fp = fopen(ed->bufname, "w+");
       if (ed->fp == NULL) {
         free(buf);
         error(EXIT_FAILURE, errno, "%s", __FUNCTION__);
       }
     }
-    rewind(ed->fp);
+    fseek(ed->fp, ed->min_changed_indx, SEEK_SET);
     fwrite(buf, sizeof(char), len, ed->fp);
     fflush(ed->fp);
     if (ftruncate(fileno(ed->fp), ftell(ed->fp)) == -1) {
-      error(0, errno, "ftruncate");
+      perror("ftruncate");
     }
-    strncpy(ed->status.msg, "File saved.", STLEN);
+    set_status(ed, st_norm, "%d bytes written", len);
+    set_min_changed_indx(ed, ed->min_changed_indx + len);
     free(buf);
     _reset(&ed->state, dirty_buffer);
   }
@@ -645,7 +671,7 @@ static Editor* editor_init(char* filepath) {
   if (filepath != NULL) {
     open_from_file(ed, filepath);
   } else {
-    *ed->name = '\0';
+    *ed->bufname = '\0';
   }
   return ed;
 }
@@ -667,7 +693,7 @@ static void editor_exit(Editor* ed) {
   if (!_has(ed->state, dirty_buffer)) {
     exit(EXIT_SUCCESS);
   }
-  strncpy(ed->status.warn, "press ^s to save or ^q^q to force quit", STLEN);
+  set_status(ed, st_warn, "save the file before quit!");
 }
 
 static void print_statusln(WINDOW* edwin, Editor* ed, u16 win_w) {
@@ -680,34 +706,26 @@ static void print_statusln(WINDOW* edwin, Editor* ed, u16 win_w) {
   }
   x += strlen(str);
 
-  if (*ed->name == '\0') {
+  if (*ed->bufname == '\0') {
     str = "scratch buffer";
   } else {
-    str = ed->name;
+    str = ed->bufname;
   }
   u32 len = clamp(strlen(str), 0, win_w - x);
   for (u32 i = 0; i < len; i++) {
     mvwaddch(edwin, 0, x++, str[i]);
   }
 
-  if (*ed->status.warn != '\0') {
-    wattron(edwin, COLOR_PAIR(STATLN_WARN_PAIR));
-    str = ed->status.warn;
-    len = clamp(strlen(str), 0, win_w - x - 2);
-    x = win_w - len - 1;
-    for (u32 i = 0; i < len; i++) {
-      mvwaddch(edwin, 0, x++, str[i]);
-    }
-    wattroff(edwin, COLOR_PAIR(STATLN_WARN_PAIR));
-    *str = '\0';
-  } else if (*ed->status.msg != '\0') {
+  if (ed->status.type != st_nothing) {
     str = ed->status.msg;
     len = clamp(strlen(str), 0, win_w - x - 2);
     x = win_w - len - 1;
+    wattron(edwin, COLOR_PAIR(ed->status.type));
     for (u32 i = 0; i < len; i++) {
       mvwaddch(edwin, 0, x++, str[i]);
     }
-    *str = '\0';
+    wattroff(edwin, COLOR_PAIR(ed->status.type));
+    ed->status.type = st_nothing;
   }
   wattroff(edwin, COLOR_PAIR(STATLN_PAIR));
 }
