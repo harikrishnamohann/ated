@@ -1,2 +1,2 @@
 # laed
-layman editor
+A layman text editor
