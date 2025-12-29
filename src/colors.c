@@ -1,6 +1,6 @@
 #pragma once
 #include "include/itypes.h"
-#include <ncurses.h>
+#include <ncursesw/ncurses.h>
 
 enum {
   EDITOR_PAIR = 1,

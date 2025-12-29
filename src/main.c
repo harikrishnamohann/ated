@@ -1,5 +1,9 @@
-#include <ncurses.h>
 #include <stdlib.h>
+#include <locale.h>
+
+#define _XOPEN_SOURCE_EXTENDED
+#include <ncursesw/ncurses.h>
+
 #include "include/itypes.h"
 #include "colors.c"
 #include "editor.c"
@@ -18,6 +22,7 @@ void cleanup() {
 }
 
 i32 main(i32 argc, char** argv) {
+  setlocale(LC_ALL, "");
   atexit(cleanup);
   initscr();
   noecho();
@@ -41,15 +46,21 @@ i32 main(i32 argc, char** argv) {
     wbkgd(edwin, COLOR_PAIR(EDITOR_PAIR) | ' ');
   }
 
+  if (!has_ic()) {
+      printf("Your terminal does not support insert character.\n");
+      exit(EXIT_FAILURE);
+  }
+
   MEVENT mevnt;
 
   editor_draw(edwin, ed);
   wrefresh(edwin);
+  u32 ch;
   do {
-    u32 ch = wgetch(edwin);
-    if (ch == ERR)
+    wget_wch(edwin, &ch);
+    if (ch == ERR) {
       continue;
-    else if (ch == KEY_MOUSE) {
+    } else if (ch == KEY_MOUSE) {
       if (getmouse(&mevnt) == OK) {
         if (mevnt.bstate & BUTTON1_PRESSED) {
           // TODO
@@ -70,23 +81,23 @@ i32 main(i32 argc, char** argv) {
         }
       }      
     } else {
-      if (ch >= 32 && ch < 127) { // ascii printable character range
-        editor_insert(ed, ch);
-      } else {
-        switch (ch) {
-          case KEY_LEFT: curs_mov_left(ed, 1); break;
-          case KEY_RIGHT: curs_mov_right(ed, 1); break;
-          case KEY_UP: curs_mov_up(ed, 1); break;
-          case KEY_DOWN: curs_mov_down(ed, 1); break;
-          case KEY_BACKSPACE: editor_removel(ed); break;
-          case KEY_DC: editor_remover(ed); break;
-          case '\n': editor_insert_newline(ed); break;
-          case '\t': editor_insert(ed, '\t'); break;
-          case CTRL('u'): editor_undo(ed); break;
-          case CTRL('r'): editor_redo(ed) ;break;
-          case CTRL('s'): write_to_file(ed); break;
-          case CTRL('q'): editor_exit(ed);
-        }
+      switch (ch) {
+        case KEY_LEFT: curs_mov_left(ed, 1); break;
+        case KEY_RIGHT: curs_mov_right(ed, 1); break;
+        case KEY_UP: curs_mov_up(ed, 1); break;
+        case KEY_DOWN: curs_mov_down(ed, 1); break;
+        case KEY_BACKSPACE: editor_removel(ed); break;
+        case KEY_DC: editor_remover(ed); break;
+        case '\n': editor_insert_newline(ed); break;
+        case '\t': editor_insert(ed, '\t'); break;
+        case CTRL('u'): editor_undo(ed); break;
+        case CTRL('r'): editor_redo(ed) ;break;
+        case CTRL('s'): write_to_file(ed); break;
+        case CTRL('q'): editor_exit(ed); break;
+        default:
+          if (ch >= 32)
+            editor_insert(ed, ch);
+          break;
       }
     }
     editor_draw(edwin, ed);
@@ -94,3 +105,4 @@ i32 main(i32 argc, char** argv) {
   } while (1);
   exit(EXIT_SUCCESS);
 }
+

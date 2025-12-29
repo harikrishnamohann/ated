@@ -1,12 +1,14 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <time.h>
-#include <ncurses.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
 #include <error.h>
 #include <stdarg.h>
+
+#define _XOPEN_SOURCE_EXTENDED
+#include <ncursesw/ncurses.h>
 
 #include "colors.c"
 #include "include/utils.h"
@@ -779,7 +781,8 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
              }
           }
         } else if (screen_x < win_w) {
-          mvwaddch(edwin, vy, screen_x, ch);
+          // To be examined
+          mvwprintw(edwin, vy, screen_x, "%ls", (wchar_t*)&ch);
         }
       }
       vx += char_width;
