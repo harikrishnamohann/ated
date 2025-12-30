@@ -756,7 +756,7 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
 
   update_view(ed, win_h, win_w);
   const u16 content_w = win_w - LNO_PADDING;
-  const u32 visual_cursx = vlen(ed, lnbeg(ed, cursy(ed)), cursi(ed)); // find visual cursx position
+  const u32 visual_cursx = vlen(ed, lnbeg(ed, cursy(ed)), cursi(ed));
    u32 vy;
 
   for (vy = 1; vy < win_h && vy + ed->view.y - 1 < lncount(ed); vy++) {
