@@ -1,14 +1,18 @@
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+#ifndef _XOPEN_SOURCE_EXTENDED
+#define _XOPEN_SOURCE_EXTENDED
+#endif
+
 #include <ctype.h>
 #include <stdlib.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <errno.h>
-#include <error.h>
 #include <stdarg.h>
-
-#define _XOPEN_SOURCE_EXTENDED
 #include <ncursesw/ncurses.h>
+#include <wchar.h> // for utf-8 helper functions
 
 #include "colors.c"
 #include "include/utils.h"
@@ -53,9 +57,8 @@ enum states {
   undoing = 0x4, // editor is performing an undo or redo operation
   commit_action = 0x8, // to force commit current timeline to undo
   pairing = 0x10, // to handle pairing characters
-  dirty_view = 0x20, // for updating syntax higlights only when view pointer changes
-  lock_modify = 0x40, // prevent the editor from inserting characters by itself
-  unwritten_buffer = 0x80, // contents inside buffer has to be written to file
+  lock_modify = 0x20, // prevent the editor from inserting characters by itself
+  unwritten_buffer = 0x40, // contents inside buffer has to be written to file
 };
 
 enum status_msg_type {
@@ -126,6 +129,14 @@ static void lncommit(Editor* ed) {
     gap_set(&ed->lines, i, changes);
   }
   ed->line_delta = 0;
+}
+
+void set_status(Editor* ed, enum status_msg_type type, const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(ed->status.msg, STLEN, fmt, args);
+  ed->status.type = type;
+  va_end(args);
 }
 
 static inline void update_min_changed_indx(Editor* ed, u32 indx) {
@@ -342,6 +353,7 @@ static inline u32 pop_pair(Editor* ed) { return u32Da_remove(&ed->pair_stack, _E
 static inline bool _is_empty_pair_stk(Editor* ed) { return ed->pair_stack.len == 0; }
 
 static void editor_insert(Editor* ed, u32 new_ch) {
+  set_status(ed, st_norm, "%ls::%x width: %hhd", &new_ch, new_ch, wcwidth(new_ch));
   if (!_has_any(ed->state, undoing | lock_modify)) {
     editor_update_timeline(ed, new_ch, op_ins);
   }
@@ -536,10 +548,11 @@ static inline u8 tabstop_distance(u32 pos) { return TAB_STOPS - (pos % TAB_STOPS
 static u32 vlen(Editor* ed, u32 start, u32 end) {
   u32 width = 0;
   for (u32 i = start; i < end; i++) {
-    if (gap_get(&ed->buffer, i) == '\t') {
+    u32 ch = gap_get(&ed->buffer, i);
+    if (ch == '\t') {
       width += tabstop_distance(width);
     } else {
-      width++;
+      width += wcwidth(ch);
     }
   }
   return width;
@@ -574,7 +587,6 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
     }
   }
   if (vx != ed->view.x || vy != ed->view.y) {
-    _set(&ed->state, dirty_view);
     ed->view.y = vy;
     ed->view.x = vx;
   }
@@ -611,7 +623,7 @@ static void open_from_file(Editor* ed, char* filepath) {
       strncpy(ed->bufname, filepath, STLEN);
       ed->fp = fopen(filepath, "r+");
       if (ed->fp == NULL) {
-        error(EXIT_FAILURE, errno, "%s(ed, %s)", __FUNCTION__, filepath);
+        perror("fopen");
       }
       fetch_file_content(ed);
     }
@@ -620,13 +632,7 @@ static void open_from_file(Editor* ed, char* filepath) {
   }
 }
 
-void set_status(Editor* ed, enum status_msg_type type, const char* fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(ed->status.msg, STLEN, fmt, args);
-  ed->status.type = type;
-  va_end(args);
-}
+
 
 static void write_to_file(Editor* ed) {
   if (_has(ed->state, unwritten_buffer)) {
@@ -642,7 +648,7 @@ static void write_to_file(Editor* ed) {
       ed->fp = fopen(ed->bufname, "w+");
       if (ed->fp == NULL) {
         free(buf);
-        error(EXIT_FAILURE, errno, "%s", __FUNCTION__);
+        perror("fopen");
       }
     }
     fseek(ed->fp, ed->min_changed_indx, SEEK_SET);
@@ -661,7 +667,7 @@ static void write_to_file(Editor* ed) {
 static Editor* editor_init(char* filepath) {
   Editor* ed = malloc(sizeof(Editor));
   if (ed == NULL) {
-    error(EXIT_FAILURE, errno, "malloc");
+    perror(__FUNCTION__);
   }
   *ed = (Editor){0};
   ed->tl = timeline_init();
@@ -733,12 +739,13 @@ static void print_statusln(WINDOW* edwin, Editor* ed, u16 win_w) {
   wattroff(edwin, COLOR_PAIR(STATLN_PAIR));
 }
 
-static void highlight_selection(WINDOW* edwin, u16 x, u16 y) {
-  mvwchgat(edwin, y, 0, LNO_PADDING, A_NORMAL | A_BOLD, TXT_GREEN, NULL);
-  mvwchgat(edwin, y, x, 1, A_NORMAL, CURS_PAIR, NULL);
+static void highlight_curs(WINDOW* edwin, u16 cx, u16 cy) {
+  mvwchgat(edwin, cy, 0, LNO_PADDING, A_NORMAL | A_BOLD, TXT_GREEN, NULL);
+  mvwchgat(edwin, cy, cx, 1, A_REVERSE, PAIR_NUMBER(mvwinch(edwin, cy, cx) & A_COLOR), NULL);
 }
 
 static void editor_draw(WINDOW* edwin, Editor* ed) {
+    
   u16 win_h, win_w;
   getmaxyx(edwin, win_h, win_w);
   werase(edwin);
@@ -750,38 +757,38 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
     mvwprintw(edwin, 1, 0, "%5d  ", ed->view.y + 1);
     wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
-    highlight_selection(edwin, LNO_PADDING, 1);
+    highlight_curs(edwin, LNO_PADDING, 1);
     return;
   }
 
   update_view(ed, win_h, win_w);
   const u16 content_w = win_w - LNO_PADDING;
   const u32 visual_cursx = vlen(ed, lnbeg(ed, cursy(ed)), cursi(ed));
-   u32 vy;
 
-  for (vy = 1; vy < win_h && vy + ed->view.y - 1 < lncount(ed); vy++) {
-    u32 line_idx = vy + ed->view.y - 1;
-    u32 start = lnbeg(ed, line_idx);
-    u32 len = lnlen(ed, line_idx);
+  u32 vy = 1;
+  for (; vy < win_h && vy + ed->view.y - 1 < lncount(ed); vy++) {
+    u32 line = vy + ed->view.y - 1;
+    u32 start = lnbeg(ed, line);
+    u32 len = lnlen(ed, line);
     
     wattron(edwin, COLOR_PAIR(COMMENT_PAIR));
-    mvwprintw(edwin, vy, 0, "%5d ", line_idx + 1);
+    mvwprintw(edwin, vy, 0, "%5d ", line + 1);
     wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
 
-    for (u32 i = 0, vx = 0; i < len; i++) {
+    u32 vx = 0;
+    for (u32 i = 0; i < len; i++) {
       u32 ch = gap_get(&ed->buffer, start + i);
-      u16 char_width = (ch == '\t') ? tabstop_distance(vx) : 1;
+      u8 char_width = (ch == '\t') ? tabstop_distance(vx) : wcwidth(ch);
 
       if (vx + char_width > ed->view.x && vx < ed->view.x + content_w) {
         u32 screen_x = vx + LNO_PADDING - ed->view.x;
         if (ch == '\t') {
           for (u32 k = 0; k < char_width; k++) {
-             if (vx + k >= ed->view.x && screen_x + k < win_w) {
-                 mvwaddch(edwin, vy, screen_x + k, ' ');
-             }
+            if (vx + k >= ed->view.x && screen_x + k < win_w) {
+              mvwaddch(edwin, vy, screen_x + k, ' ');
+            }
           }
         } else if (screen_x < win_w) {
-          // To be examined
           mvwprintw(edwin, vy, screen_x, "%ls", (wchar_t*)&ch);
         }
       }
@@ -797,6 +804,5 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
   u16 cy = DELTA(ed->view.y, cursy(ed)) + 1;
   u16 cx = visual_cursx - ed->view.x + LNO_PADDING;
   
-  highlight_selection(edwin, cx, cy);
-  _reset(&ed->state, dirty_view);
+  highlight_curs(edwin, cx, cy);
 }
