@@ -1,3 +1,4 @@
+#include <stdio.h>
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
 #endif
@@ -84,7 +85,6 @@ typedef struct {
   FILE* fp;
   char bufname[STLEN];
   struct status status;
-  u32 min_changed_indx;
 } Editor;
 
 
@@ -138,17 +138,6 @@ void set_status(Editor* ed, enum status_msg_type type, const char* fmt, ...) {
   ed->status.type = type;
   va_end(args);
 }
-
-static inline void update_min_changed_indx(Editor* ed, u32 indx) {
-  if (indx < ed->min_changed_indx) {
-    ed->min_changed_indx = indx;
-  }
-}
-
-static inline void set_min_changed_indx(Editor* ed, u32 indx) {
-  ed->min_changed_indx = clamp(indx, 0, GAP_LEN(&ed->buffer));
-}
-
 
 /** @CURS **/
 static inline void update_sticky_curs(Editor* ed) {
@@ -368,7 +357,6 @@ static void editor_insert(Editor* ed, u32 new_ch) {
     }
   }
 
-  update_min_changed_indx(ed, cursi(ed));
   gap_insert(&ed->buffer, new_ch);
   ed->line_delta++;
   if (new_ch == '\n') { // handling lines
@@ -452,7 +440,6 @@ static void editor_removel(Editor* ed) {
   if (removing_ch == '\n') {
     gap_remove(&ed->lines); // removing line entry
   }
-  update_min_changed_indx(ed, rmidx);
   update_sticky_curs(ed);
   if (GAP_LEN(&ed->buffer) == 0) {
     _set(&ed->state, blank);
@@ -592,24 +579,14 @@ static void update_view(Editor* ed, u16 win_h, u16 win_w) {
   }
 }
 
-
 // @FILE_HANDLING
 static void fetch_file_content(Editor* ed) {
   _set(&ed->state, lock_modify);
-  fseek(ed->fp, 0, SEEK_END);
-  u32 fsize = ftell(ed->fp);
-  rewind(ed->fp);
-  char* buf = malloc(sizeof(char) * fsize); // not accounted for null terminator
-  if (fread(buf, sizeof(char), fsize, ed->fp) != fsize) {
-    free(buf);
-    perror("fread");
+  u32 ch;
+  while ((ch = fgetwc(ed->fp)) != WEOF) {
+    editor_insert(ed, ch);
   }
-  for (u32 i = 0; i < fsize; i++) {
-    editor_insert(ed, buf[i]);
-  }
-  ed->min_changed_indx = fsize;
   curs_mov(ed, 0);
-  free(buf);
   _reset(&ed->state, lock_modify);
 }
 
@@ -632,34 +609,27 @@ static void open_from_file(Editor* ed, char* filepath) {
   }
 }
 
-
-
 static void write_to_file(Editor* ed) {
   if (_has(ed->state, unwritten_buffer)) {
-    u32 len = GAP_LEN(&ed->buffer) - ed->min_changed_indx, i;
-    char *buf = malloc(sizeof(char) * len);
-    for (i = 0; i < len; i++) {
-      buf[i] = (char)gap_get(&ed->buffer, i + ed->min_changed_indx);
-    }
     if (ed->fp == NULL) {
       if (*ed->bufname == '\0') { // obtain filename from user TODO
         strncpy(ed->bufname, DEFAULT_FILE_NAME, STLEN);
       }
       ed->fp = fopen(ed->bufname, "w+");
       if (ed->fp == NULL) {
-        free(buf);
         perror("fopen");
       }
     }
-    fseek(ed->fp, ed->min_changed_indx, SEEK_SET);
-    fwrite(buf, sizeof(char), len, ed->fp);
+    rewind(ed->fp);
+    u32 len = GAP_LEN(&ed->buffer);
+    for (u32 i = 0; i < len; i++) {
+      fputwc(gap_get(&ed->buffer, i), ed->fp);
+    }
     fflush(ed->fp);
     if (ftruncate(fileno(ed->fp), ftell(ed->fp)) == -1) {
       perror("ftruncate");
     }
-    set_status(ed, st_norm, "%d bytes written", len);
-    set_min_changed_indx(ed, ed->min_changed_indx + len);
-    free(buf);
+    set_status(ed, st_norm, "%d characters written.", len);
     _reset(&ed->state, unwritten_buffer);
   }
 }
@@ -745,7 +715,6 @@ static void highlight_curs(WINDOW* edwin, u16 cx, u16 cy) {
 }
 
 static void editor_draw(WINDOW* edwin, Editor* ed) {
-    
   u16 win_h, win_w;
   getmaxyx(edwin, win_h, win_w);
   werase(edwin);
@@ -776,20 +745,23 @@ static void editor_draw(WINDOW* edwin, Editor* ed) {
     wattroff(edwin, COLOR_PAIR(COMMENT_PAIR));
 
     u32 vx = 0;
+    wchar_t wch[2] = {0};
+    cchar_t cchar;
     for (u32 i = 0; i < len; i++) {
-      u32 ch = gap_get(&ed->buffer, start + i);
-      u8 char_width = (ch == '\t') ? tabstop_distance(vx) : wcwidth(ch);
+      *wch = gap_get(&ed->buffer, start + i);
+      u8 char_width = (*wch == '\t') ? tabstop_distance(vx) : wcwidth(*wch);
 
       if (vx + char_width > ed->view.x && vx < ed->view.x + content_w) {
         u32 screen_x = vx + LNO_PADDING - ed->view.x;
-        if (ch == '\t') {
+        if (*wch == '\t') {
           for (u32 k = 0; k < char_width; k++) {
             if (vx + k >= ed->view.x && screen_x + k < win_w) {
               mvwaddch(edwin, vy, screen_x + k, ' ');
             }
           }
         } else if (screen_x < win_w) {
-          mvwprintw(edwin, vy, screen_x, "%ls", (wchar_t*)&ch);
+          setcchar(&cchar, wch, A_NORMAL, EDITOR_PAIR, NULL);
+          mvwadd_wch(edwin, vy, screen_x, &cchar);
         }
       }
       vx += char_width;

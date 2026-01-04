@@ -16,11 +16,10 @@
 - [ ] selection
 - [x] status line  
 - [x] indentation
+- [ ] create a choice for tab character (space or \t)
 - [ ] command palette
+- [x] utf-8 support
 - [ ] syntax highlighting 
 - [ ] multiple instances
 - [ ] search
 - [ ] replace
-
-understand and re invent the draw() function
-colors.c is messy right now
