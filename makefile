@@ -1,6 +1,6 @@
 CC = clang
 CFLAGS = -std=gnu17 -lncursesw
-TARGET = laed
+TARGET = clem
 SRC = src/main.c
 
 all: debug
@@ -11,4 +11,7 @@ debug:
 release:
 	$(CC) $(SRC) -O2 $(CFLAGS) -o $(TARGET)
 
-.PHONY: debug release run
+kilo: src/kilo.c
+	$(CC) src/kilo.c -Wall -fsanitize=address -g -o kilo
+
+.PHONY: debug release
