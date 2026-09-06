@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "main-project.md",
-                "mode": "source",
+                "file": "clementine.md",
+                "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "main-project"
+              "title": "clementine"
             }
           }
         ],
@@ -173,7 +173,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "main-project.md",
+                "file": "clementine.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -203,6 +203,6 @@
   "active": "408faf9cf11ec559",
   "lastOpenFiles": [
     "Replicated_abstract_data_types_Building.pdf",
-    "main-project.md"
+    "clementine.md"
   ]
 }
